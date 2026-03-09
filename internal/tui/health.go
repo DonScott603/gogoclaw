@@ -26,7 +26,7 @@ func (m model) renderHealthPanel() string {
 	if m.healthMonitor == nil {
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 		b.WriteString(dimStyle.Render("No health monitor configured.") + "\n")
-		b.WriteString("\nPress Ctrl+G to return to chat.\n")
+		b.WriteString("\nPress F2 to return to chat.\n")
 		return b.String()
 	}
 
@@ -79,7 +79,7 @@ func (m model) renderHealthPanel() string {
 		b.WriteString(fmt.Sprintf("  %s\n", lastCheck.Format("15:04:05 2006-01-02")))
 	}
 
-	b.WriteString("\nPress Ctrl+G to return to chat.\n")
+	b.WriteString("\nPress F2 to return to chat.\n")
 	return b.String()
 }
 

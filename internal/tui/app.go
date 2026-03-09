@@ -90,7 +90,7 @@ type model struct {
 }
 
 // New creates a new bubbletea program for the TUI.
-// An optional health.Monitor can be passed to enable the health dashboard (Ctrl+H).
+// An optional health.Monitor can be passed to enable the health dashboard (F2).
 func New(eng *engine.Engine, opts ...Option) *tea.Program {
 	m := initialModel(eng)
 	for _, opt := range opts {
@@ -103,7 +103,7 @@ func New(eng *engine.Engine, opts ...Option) *tea.Program {
 // Option configures the TUI model.
 type Option func(*model)
 
-// WithHealthMonitor attaches a health monitor to the TUI for the Ctrl+H dashboard.
+// WithHealthMonitor attaches a health monitor to the TUI for the F2 dashboard.
 func WithHealthMonitor(mon *health.Monitor) Option {
 	return func(m *model) {
 		m.healthMonitor = mon
@@ -153,7 +153,7 @@ func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) 
 
 func initialModel(eng *engine.Engine) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, Ctrl+G health, Esc quit)"
+	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, F2 health, Esc quit)"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.SetWidth(80)
@@ -162,7 +162,7 @@ func initialModel(eng *engine.Engine) model {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
-		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | Ctrl+G: health dashboard\n")
+		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | F2: health dashboard\n")
 
 	return model{
 		engine:   eng,
@@ -230,7 +230,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.renderMessages())
 			return m, nil
 
-		case tea.KeyCtrlG:
+		case tea.KeyF2:
 			// Toggle health dashboard panel.
 			if m.activePanel == panelHealth {
 				m.activePanel = panelChat
