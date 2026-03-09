@@ -7,10 +7,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DonScott603/gogoclaw/internal/audit"
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
+	"github.com/DonScott603/gogoclaw/internal/health"
 	"github.com/DonScott603/gogoclaw/internal/memory"
+	"github.com/DonScott603/gogoclaw/internal/pii"
 	"github.com/DonScott603/gogoclaw/internal/provider"
+	"github.com/DonScott603/gogoclaw/internal/security"
 	"github.com/DonScott603/gogoclaw/internal/storage"
 	"github.com/DonScott603/gogoclaw/internal/tools"
 	"github.com/DonScott603/gogoclaw/internal/tui"
@@ -38,11 +42,60 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Initialize audit logger.
+	auditPath := expandHome(cfg.Logging.Audit.Path)
+	if auditPath == "" {
+		auditPath = filepath.Join(configDir, "audit", "gogoclaw.jsonl")
+	}
+	auditLogger, err := audit.NewLogger(audit.LoggerConfig{
+		Enabled: cfg.Logging.Audit.Enabled,
+		Path:    auditPath,
+	})
+	if err != nil {
+		log.Printf("audit: failed to initialize: %v (continuing without audit)", err)
+		auditLogger, _ = audit.NewLogger(audit.LoggerConfig{Enabled: false})
+	}
+	defer auditLogger.Close()
+
+	// Initialize network guard.
+	netGuard := security.NewNetworkGuard(security.NetworkGuardConfig{
+		Allowlist:     cfg.Network.Allowlist,
+		DenyAllOthers: cfg.Network.DenyAllOthers,
+		LogBlocked:    cfg.Network.LogBlocked,
+		OnBlocked: func(domain, requester string, ts time.Time) {
+			auditLogger.LogNetworkBlocked(domain, requester, "not_in_allowlist")
+		},
+	})
+	if agent, ok := cfg.Agents["base"]; ok {
+		netGuard.AddAgentAllowlist(agent.Network.AdditionalAllowlist)
+	}
+	_ = netGuard // Used by web_fetch in future; transport available via netGuard.Transport()
+
 	// Build provider from config.
 	p, err := buildProvider(cfg)
 	if err != nil {
 		log.Fatalf("provider: %v", err)
 	}
+
+	// Determine PII mode and wrap provider with PII gate.
+	piiMode := pii.ModeDisabled
+	isLocal := false
+	if agent, ok := cfg.Agents["base"]; ok && agent.PII.Mode != "" {
+		piiMode = pii.Mode(agent.PII.Mode)
+	}
+	if pc := firstProvider(cfg); pc != nil && pc.Type == "ollama" {
+		isLocal = true
+	}
+
+	piiGate := pii.NewGate(p, pii.GateConfig{
+		Mode:    piiMode,
+		IsLocal: isLocal,
+		AuditFn: func(patterns []string, mode pii.Mode, action string) {
+			auditLogger.LogPIIDetected(patterns, string(mode), action)
+		},
+	})
+	// Use the PII gate as the provider going forward.
+	var activeProvider provider.Provider = piiGate
 
 	// Initialize workspace.
 	ws, err := engine.NewWorkspace(cfg.Workspace)
@@ -77,7 +130,6 @@ func main() {
 		}
 		os.MkdirAll(vecPath, 0o755)
 
-		// Log the resolved path and whether existing data was found.
 		if entries, err := os.ReadDir(vecPath); err == nil {
 			log.Printf("memory: vector store path: %s (%d existing entries)", vecPath, len(entries))
 		} else {
@@ -125,12 +177,12 @@ func main() {
 
 	// Set up summarizer if enabled.
 	if agent, ok := cfg.Agents["base"]; ok && agent.Context.Summarization.Enabled {
-		summarizer = memory.NewSummarizer(p, agent.Context.Summarization.ThresholdTokens, memStore)
+		summarizer = memory.NewSummarizer(activeProvider, agent.Context.Summarization.ThresholdTokens, memStore)
 	}
 
-	// Create engine.
+	// Create engine with PII-gated provider.
 	eng := engine.New(engine.Config{
-		Provider:     p,
+		Provider:     activeProvider,
 		Dispatcher:   dispatcher,
 		SystemPrompt: systemPrompt,
 		MaxContext:   maxCtx,
@@ -145,6 +197,14 @@ func main() {
 		}
 		eng.Assembler().SetMemoryStore(memStore, topK, searchOpts)
 	}
+
+	// Initialize health monitor.
+	monitor := health.NewMonitor(health.MonitorConfig{
+		PIIMode: string(piiMode),
+	})
+	monitor.Register(p) // register the raw provider (not the gate)
+	monitor.Start()
+	defer monitor.Stop()
 
 	// Create the TUI program once with the real engine.
 	program := tui.New(eng)
@@ -218,6 +278,20 @@ func makeProvider(pc config.ProviderConfig) provider.Provider {
 			Timeout:          pc.Timeout,
 		})
 	}
+}
+
+// firstProvider returns the first configured provider config, or nil.
+func firstProvider(cfg *config.Config) *config.ProviderConfig {
+	if agent, ok := cfg.Agents["base"]; ok && len(agent.ProviderRouting.ProviderChain) > 0 {
+		name := agent.ProviderRouting.ProviderChain[0].Provider
+		if pc, ok := cfg.Providers[name]; ok {
+			return &pc
+		}
+	}
+	for _, pc := range cfg.Providers {
+		return &pc
+	}
+	return nil
 }
 
 func loadSystemPrompt(configDir string, cfg *config.Config) string {
