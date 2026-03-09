@@ -10,6 +10,8 @@ import (
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/provider"
+	"github.com/DonScott603/gogoclaw/internal/storage"
+	"github.com/DonScott603/gogoclaw/internal/tools"
 	"github.com/DonScott603/gogoclaw/internal/tui"
 )
 
@@ -41,12 +43,73 @@ func main() {
 		log.Fatalf("provider: %v", err)
 	}
 
+	// Initialize workspace.
+	ws, err := engine.NewWorkspace(cfg.Workspace)
+	if err != nil {
+		log.Fatalf("workspace: %v", err)
+	}
+
+	// Open conversation store.
+	dbPath := expandHome(cfg.Storage.Conversations.Path)
+	if dbPath == "" {
+		dbPath = filepath.Join(configDir, "data", "conversations.db")
+	}
+	os.MkdirAll(filepath.Dir(dbPath), 0o755)
+	store, err := storage.NewStore(dbPath)
+	if err != nil {
+		log.Fatalf("storage: %v", err)
+	}
+	defer store.Close()
+
+	// Create TUI with confirmation gate for shell_exec.
+	// We create the program first so we can pass the confirm function to tools.
+	program, confirmFn := tui.NewWithConfirmGate(nil) // engine set below
+
+	// Build tool dispatcher with all core tools.
+	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn)
+
+	// Wire tool call/result observers to the TUI.
+	onCall, onResult := tui.ToolCallObserver(program)
+	dispatcher.SetCallbacks(onCall, onResult)
+
 	// Load system prompt.
 	systemPrompt := loadSystemPrompt(configDir, cfg)
 
-	// Create engine and TUI.
-	eng := engine.New(p, systemPrompt)
-	program := tui.New(eng)
+	// Determine max context tokens.
+	maxCtx := 8192
+	if agent, ok := cfg.Agents["base"]; ok && agent.Context.MaxHistoryTokens > 0 {
+		maxCtx = agent.Context.MaxHistoryTokens
+	}
+
+	// Create engine with full wiring.
+	eng := engine.New(engine.Config{
+		Provider:     p,
+		Dispatcher:   dispatcher,
+		SystemPrompt: systemPrompt,
+		MaxContext:    maxCtx,
+	})
+
+	// Set the engine on the TUI program (it was nil during construction).
+	// We need to recreate the program with the engine now.
+	program, confirmFn = tui.NewWithConfirmGate(eng)
+	dispatcher = tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn)
+	onCall, onResult = tui.ToolCallObserver(program)
+	dispatcher.SetCallbacks(onCall, onResult)
+
+	// Update engine's dispatcher.
+	eng = engine.New(engine.Config{
+		Provider:     p,
+		Dispatcher:   dispatcher,
+		SystemPrompt: systemPrompt,
+		MaxContext:    maxCtx,
+	})
+
+	// Final program with the real engine.
+	program, _ = tui.NewWithConfirmGate(eng)
+	onCall, onResult = tui.ToolCallObserver(program)
+	dispatcher.SetCallbacks(onCall, onResult)
+
+	_ = store // store ready for Phase 2 TUI conversation persistence integration
 
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
@@ -58,27 +121,22 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("no providers configured; add a YAML file to ~/.gogoclaw/providers/")
 	}
 
-	// If there's an agent config with a provider chain, use the router.
-	// Otherwise use the first available provider.
 	var providers []provider.Provider
 	var timeouts []time.Duration
 	var retries []int
 
-	// Check for a base agent with routing config.
 	if agent, ok := cfg.Agents["base"]; ok && len(agent.ProviderRouting.ProviderChain) > 0 {
 		for _, entry := range agent.ProviderRouting.ProviderChain {
 			pc, ok := cfg.Providers[entry.Provider]
 			if !ok {
 				continue
 			}
-			p := makeProvider(pc)
-			providers = append(providers, p)
+			providers = append(providers, makeProvider(pc))
 			timeouts = append(timeouts, entry.Timeout)
 			retries = append(retries, entry.Retry)
 		}
 	}
 
-	// Fallback: use all configured providers in map iteration order.
 	if len(providers) == 0 {
 		for _, pc := range cfg.Providers {
 			providers = append(providers, makeProvider(pc))
@@ -105,7 +163,7 @@ func makeProvider(pc config.ProviderConfig) provider.Provider {
 			DefaultModel: pc.DefaultModel,
 			Timeout:      pc.Timeout,
 		})
-	default: // "openai_compatible" and anything else
+	default:
 		return provider.NewOpenAICompat(provider.OpenAICompatConfig{
 			Name:             pc.Name,
 			BaseURL:          pc.BaseURL,
@@ -118,7 +176,6 @@ func makeProvider(pc config.ProviderConfig) provider.Provider {
 }
 
 func loadSystemPrompt(configDir string, cfg *config.Config) string {
-	// Try loading from agent profile's system_prompt_file.
 	if agent, ok := cfg.Agents["base"]; ok && agent.SystemPromptFile != "" {
 		path := filepath.Join(configDir, "agents", agent.SystemPromptFile)
 		data, err := os.ReadFile(path)
@@ -126,5 +183,16 @@ func loadSystemPrompt(configDir string, cfg *config.Config) string {
 			return string(data)
 		}
 	}
-	return "You are GoGoClaw, a helpful AI assistant."
+	return "You are GoGoClaw, a helpful AI assistant. You have access to tools for file operations, shell commands, web fetching, and memory. Use them when appropriate."
+}
+
+func expandHome(path string) string {
+	if len(path) > 1 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }

@@ -27,9 +27,14 @@ type ChatRequest struct {
 }
 
 // Message is a single message in a conversation.
+// Role is one of: "system", "user", "assistant", "tool".
+// For assistant messages with tool calls, ToolCalls is populated.
+// For tool result messages, ToolCallID identifies which call this responds to.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // Tool is an OpenAI-compatible tool definition.

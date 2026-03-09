@@ -2,20 +2,32 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/DonScott603/gogoclaw/internal/provider"
+	"github.com/DonScott603/gogoclaw/internal/tools"
 )
 
 // mockProvider is a test double for Provider.
 type mockProvider struct {
-	name     string
-	response string
+	name      string
+	response  string
+	toolCalls []provider.ToolCall
+	callCount int
 }
 
 func (m *mockProvider) Name() string { return m.name }
 
 func (m *mockProvider) Chat(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	m.callCount++
+	// On first call, return tool calls if configured. On subsequent calls, return text.
+	if m.callCount == 1 && len(m.toolCalls) > 0 {
+		return &provider.ChatResponse{
+			ToolCalls: m.toolCalls,
+			Usage:     provider.TokenUsage{TotalTokens: 10},
+		}, nil
+	}
 	return &provider.ChatResponse{
 		Content: m.response,
 		Usage:   provider.TokenUsage{TotalTokens: 10},
@@ -35,9 +47,17 @@ func (m *mockProvider) ChatStream(_ context.Context, req provider.ChatRequest) (
 func (m *mockProvider) CountTokens(content string) (int, error) { return len(content) / 4, nil }
 func (m *mockProvider) Healthy(_ context.Context) bool          { return true }
 
+func newTestEngine(p provider.Provider, prompt string) *Engine {
+	return New(Config{
+		Provider:     p,
+		SystemPrompt: prompt,
+		MaxContext:    8192,
+	})
+}
+
 func TestEngineSend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "Hello from mock!"}
-	eng := New(mock, "You are a test assistant.")
+	eng := newTestEngine(mock, "You are a test assistant.")
 
 	resp, err := eng.Send(context.Background(), "Hi")
 	if err != nil {
@@ -50,7 +70,7 @@ func TestEngineSend(t *testing.T) {
 
 func TestEngineSendStream(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "Streamed!"}
-	eng := New(mock, "")
+	eng := newTestEngine(mock, "")
 
 	ch, err := eng.SendStream(context.Background(), "Hi")
 	if err != nil {
@@ -68,15 +88,62 @@ func TestEngineSendStream(t *testing.T) {
 
 func TestEngineHistoryAccumulates(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
-	eng := New(mock, "system prompt")
+	eng := newTestEngine(mock, "system prompt")
 
 	eng.Send(context.Background(), "msg1")
 	eng.Send(context.Background(), "msg2")
 
-	eng.mu.Lock()
-	defer eng.mu.Unlock()
+	h := eng.History()
 	// history should have: user msg1, assistant reply, user msg2, assistant reply
-	if len(eng.history) != 4 {
-		t.Errorf("history length = %d, want 4", len(eng.history))
+	if len(h) != 4 {
+		t.Errorf("history length = %d, want 4", len(h))
+	}
+}
+
+func TestEngineToolCallLoop(t *testing.T) {
+	mock := &mockProvider{
+		name:     "mock",
+		response: "Final answer after tool use.",
+		toolCalls: []provider.ToolCall{
+			{
+				ID:        "call_1",
+				Name:      "think",
+				Arguments: json.RawMessage(`{"thought":"analyzing..."}`),
+			},
+		},
+	}
+
+	d := tools.NewDispatcher(0)
+	d.Register(tools.ToolDef{
+		Name:        "think",
+		Description: "test think",
+		Parameters:  json.RawMessage(`{}`),
+		Fn: func(ctx context.Context, args json.RawMessage) (string, error) {
+			return "thought recorded", nil
+		},
+	})
+
+	eng := New(Config{
+		Provider:     mock,
+		Dispatcher:   d,
+		SystemPrompt: "",
+		MaxContext:    8192,
+	})
+
+	resp, err := eng.Send(context.Background(), "use a tool")
+	if err != nil {
+		t.Fatalf("Send() with tool calls error: %v", err)
+	}
+	if resp != "Final answer after tool use." {
+		t.Errorf("Send() = %q, want %q", resp, "Final answer after tool use.")
+	}
+
+	// History should contain: user, assistant(toolcall), tool(result), assistant(final)
+	h := eng.History()
+	if len(h) != 4 {
+		t.Errorf("history length = %d, want 4", len(h))
+		for i, m := range h {
+			t.Logf("  [%d] role=%s content=%q", i, m.Role, m.Content)
+		}
 	}
 }
