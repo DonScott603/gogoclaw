@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/DonScott603/gogoclaw/internal/engine"
+	"github.com/DonScott603/gogoclaw/internal/health"
 	"github.com/DonScott603/gogoclaw/internal/provider"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -64,6 +65,7 @@ type panel int
 const (
 	panelChat panel = iota
 	panelConversations
+	panelHealth
 )
 
 // model is the bubbletea model for the GoGoClaw TUI.
@@ -84,13 +86,28 @@ type model struct {
 	confirmCmd     string
 	confirmCh      chan bool
 	toolActivity   string // current tool being executed
+	healthMonitor  *health.Monitor
 }
 
 // New creates a new bubbletea program for the TUI.
-func New(eng *engine.Engine) *tea.Program {
+// An optional health.Monitor can be passed to enable the health dashboard (Ctrl+H).
+func New(eng *engine.Engine, opts ...Option) *tea.Program {
 	m := initialModel(eng)
+	for _, opt := range opts {
+		opt(&m)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	return p
+}
+
+// Option configures the TUI model.
+type Option func(*model)
+
+// WithHealthMonitor attaches a health monitor to the TUI for the Ctrl+H dashboard.
+func WithHealthMonitor(mon *health.Monitor) Option {
+	return func(m *model) {
+		m.healthMonitor = mon
+	}
 }
 
 // ConfirmGate holds a settable reference to a tea.Program so the confirm
@@ -136,7 +153,7 @@ func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) 
 
 func initialModel(eng *engine.Engine) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, Esc quit)"
+	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, Ctrl+H health, Esc quit)"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.SetWidth(80)
@@ -145,7 +162,7 @@ func initialModel(eng *engine.Engine) model {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
-		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list\n")
+		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | Ctrl+H: health dashboard\n")
 
 	return model{
 		engine:   eng,
@@ -211,6 +228,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activePanel = panelChat
 			}
 			m.viewport.SetContent(m.renderMessages())
+			return m, nil
+
+		case tea.KeyCtrlH:
+			// Toggle health dashboard panel.
+			if m.activePanel == panelHealth {
+				m.activePanel = panelChat
+			} else {
+				m.activePanel = panelHealth
+			}
 			return m, nil
 		}
 
@@ -321,9 +347,12 @@ func (m model) View() string {
 	statusBar := m.renderStatusBar()
 
 	var mainView string
-	if m.activePanel == panelConversations {
+	switch m.activePanel {
+	case panelConversations:
 		mainView = m.renderConversationList()
-	} else {
+	case panelHealth:
+		mainView = m.renderHealthPanel()
+	default:
 		mainView = m.viewport.View()
 	}
 

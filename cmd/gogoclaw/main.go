@@ -207,7 +207,7 @@ func main() {
 	defer monitor.Stop()
 
 	// Create the TUI program once with the real engine.
-	program := tui.New(eng)
+	program := tui.New(eng, tui.WithHealthMonitor(monitor))
 	gate.SetProgram(program)
 
 	// Wire tool call/result observers to the TUI.
