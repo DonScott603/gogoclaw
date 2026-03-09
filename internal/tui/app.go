@@ -153,7 +153,7 @@ func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) 
 
 func initialModel(eng *engine.Engine) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, Ctrl+H health, Esc quit)"
+	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, Ctrl+G health, Esc quit)"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.SetWidth(80)
@@ -162,7 +162,7 @@ func initialModel(eng *engine.Engine) model {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
-		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | Ctrl+H: health dashboard\n")
+		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | Ctrl+G: health dashboard\n")
 
 	return model{
 		engine:   eng,
@@ -230,7 +230,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.renderMessages())
 			return m, nil
 
-		case tea.KeyCtrlH:
+		case tea.KeyCtrlG:
 			// Toggle health dashboard panel.
 			if m.activePanel == panelHealth {
 				m.activePanel = panelChat
