@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/DonScott603/gogoclaw/internal/memory"
 	"github.com/DonScott603/gogoclaw/internal/provider"
 	"github.com/DonScott603/gogoclaw/internal/tools"
 )
@@ -21,7 +22,9 @@ type Engine struct {
 	provider     provider.Provider
 	dispatcher   *tools.Dispatcher
 	assembler    *ContextAssembler
+	summarizer   *memory.Summarizer
 	systemPrompt string
+	convID       string // current conversation ID
 	mu           sync.Mutex
 	history      []provider.Message
 }
@@ -32,6 +35,7 @@ type Config struct {
 	Dispatcher   *tools.Dispatcher
 	SystemPrompt string
 	MaxContext   int
+	Summarizer   *memory.Summarizer
 }
 
 // New creates an Engine with the given configuration.
@@ -40,8 +44,21 @@ func New(cfg Config) *Engine {
 		provider:     cfg.Provider,
 		dispatcher:   cfg.Dispatcher,
 		assembler:    NewContextAssembler(cfg.MaxContext, cfg.Provider),
+		summarizer:   cfg.Summarizer,
 		systemPrompt: cfg.SystemPrompt,
 	}
+}
+
+// SetConversationID sets the current conversation ID for memory attribution.
+func (e *Engine) SetConversationID(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.convID = id
+}
+
+// Assembler returns the context assembler for external configuration.
+func (e *Engine) Assembler() *ContextAssembler {
+	return e.assembler
 }
 
 // Send sends a user message, handles any tool call loops, and returns the
@@ -50,6 +67,8 @@ func (e *Engine) Send(ctx context.Context, userMessage string) (string, error) {
 	e.mu.Lock()
 	e.history = append(e.history, provider.Message{Role: "user", Content: userMessage})
 	e.mu.Unlock()
+
+	e.maybeSummarize(ctx)
 
 	for round := 0; round < maxToolRounds; round++ {
 		messages := e.buildMessages()
@@ -93,6 +112,8 @@ func (e *Engine) SendStream(ctx context.Context, userMessage string) (<-chan pro
 	e.mu.Lock()
 	e.history = append(e.history, provider.Message{Role: "user", Content: userMessage})
 	e.mu.Unlock()
+
+	e.maybeSummarize(ctx)
 
 	messages := e.buildMessages()
 	req := e.buildRequest(messages)
@@ -269,6 +290,27 @@ func (e *Engine) continueAfterTools(ctx context.Context) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("engine: exceeded maximum tool rounds in follow-up")
+}
+
+// maybeSummarize runs rolling summarization if the history exceeds the threshold.
+func (e *Engine) maybeSummarize(ctx context.Context) {
+	if e.summarizer == nil {
+		return
+	}
+	e.mu.Lock()
+	h := make([]provider.Message, len(e.history))
+	copy(h, e.history)
+	convID := e.convID
+	e.mu.Unlock()
+
+	result, err := e.summarizer.MaybeSummarize(ctx, h, convID)
+	if err != nil || result == nil {
+		return
+	}
+
+	e.mu.Lock()
+	e.history = result.RemainingHistory
+	e.mu.Unlock()
 }
 
 // ToolDefinitionsJSON returns tool definitions as raw JSON for debug/display.

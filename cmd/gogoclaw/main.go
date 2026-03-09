@@ -9,6 +9,7 @@ import (
 
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
+	"github.com/DonScott603/gogoclaw/internal/memory"
 	"github.com/DonScott603/gogoclaw/internal/provider"
 	"github.com/DonScott603/gogoclaw/internal/storage"
 	"github.com/DonScott603/gogoclaw/internal/tools"
@@ -61,11 +62,47 @@ func main() {
 	}
 	defer store.Close()
 
+	// Initialize memory system.
+	var memStore memory.VectorStore
+	var summarizer *memory.Summarizer
+	searchOpts := memory.SearchOptions{
+		MinSimilarity: 0.5,
+		RecencyWeight: 0.2,
+	}
+
+	if cfg.Memory.Enabled {
+		vecPath := expandHome(cfg.Memory.Storage.Path)
+		if vecPath == "" {
+			vecPath = filepath.Join(configDir, "data", "vectors")
+		}
+		os.MkdirAll(vecPath, 0o755)
+
+		embFn := memory.NewEmbeddingFunc(cfg.Memory, cfg.Providers)
+		cs, err := memory.NewChromemStore(memory.ChromemConfig{
+			Path:          vecPath,
+			Compress:      true,
+			EmbeddingFunc: embFn,
+		})
+		if err != nil {
+			log.Printf("memory: failed to initialize vector store: %v (continuing without memory)", err)
+		} else {
+			memStore = cs
+			defer cs.Close()
+		}
+
+		if cfg.Memory.Retrieval.RelevanceThreshold > 0 {
+			searchOpts.MinSimilarity = cfg.Memory.Retrieval.RelevanceThreshold
+		}
+		if cfg.Memory.Retrieval.RecencyWeight > 0 {
+			searchOpts.RecencyWeight = cfg.Memory.Retrieval.RecencyWeight
+		}
+	}
+
 	// Create confirm gate — the program reference is set after construction.
 	gate, confirmFn := tui.NewConfirmGate()
 
 	// Build tool dispatcher with all core tools.
-	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn)
+	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn, memStore, searchOpts)
 
 	// Load system prompt.
 	systemPrompt := loadSystemPrompt(configDir, cfg)
@@ -76,13 +113,28 @@ func main() {
 		maxCtx = agent.Context.MaxHistoryTokens
 	}
 
+	// Set up summarizer if enabled.
+	if agent, ok := cfg.Agents["base"]; ok && agent.Context.Summarization.Enabled {
+		summarizer = memory.NewSummarizer(p, agent.Context.Summarization.ThresholdTokens, memStore)
+	}
+
 	// Create engine.
 	eng := engine.New(engine.Config{
 		Provider:     p,
 		Dispatcher:   dispatcher,
 		SystemPrompt: systemPrompt,
-		MaxContext:    maxCtx,
+		MaxContext:   maxCtx,
+		Summarizer:   summarizer,
 	})
+
+	// Configure memory retrieval on the context assembler.
+	if memStore != nil {
+		topK := 5
+		if agent, ok := cfg.Agents["base"]; ok && agent.MemoryConfig.TopK > 0 {
+			topK = agent.MemoryConfig.TopK
+		}
+		eng.Assembler().SetMemoryStore(memStore, topK, searchOpts)
+	}
 
 	// Create the TUI program once with the real engine.
 	program := tui.New(eng)
@@ -92,7 +144,7 @@ func main() {
 	onCall, onResult := tui.ToolCallObserver(program)
 	dispatcher.SetCallbacks(onCall, onResult)
 
-	_ = store // store ready for Phase 2 TUI conversation persistence integration
+	_ = store // store ready for TUI conversation persistence integration
 
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
