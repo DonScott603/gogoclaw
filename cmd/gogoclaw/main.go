@@ -77,6 +77,13 @@ func main() {
 		}
 		os.MkdirAll(vecPath, 0o755)
 
+		// Log the resolved path and whether existing data was found.
+		if entries, err := os.ReadDir(vecPath); err == nil {
+			log.Printf("memory: vector store path: %s (%d existing entries)", vecPath, len(entries))
+		} else {
+			log.Printf("memory: vector store path: %s (new directory)", vecPath)
+		}
+
 		embFn := memory.NewEmbeddingFunc(cfg.Memory, cfg.Providers)
 		cs, err := memory.NewChromemStore(memory.ChromemConfig{
 			Path:          vecPath,
@@ -87,6 +94,7 @@ func main() {
 			log.Printf("memory: failed to initialize vector store: %v (continuing without memory)", err)
 		} else {
 			memStore = cs
+			log.Printf("memory: vector store initialized successfully (persistent=%v)", vecPath != "")
 			defer cs.Close()
 		}
 
@@ -96,6 +104,8 @@ func main() {
 		if cfg.Memory.Retrieval.RecencyWeight > 0 {
 			searchOpts.RecencyWeight = cfg.Memory.Retrieval.RecencyWeight
 		}
+	} else {
+		log.Printf("memory: disabled (set memory.enabled=true in config to enable)")
 	}
 
 	// Create confirm gate — the program reference is set after construction.
@@ -222,7 +232,11 @@ func loadSystemPrompt(configDir string, cfg *config.Config) string {
 }
 
 func expandHome(path string) string {
-	if len(path) > 1 && path[:2] == "~/" {
+	if len(path) < 2 {
+		return path
+	}
+	// Handle both ~/path and ~\path (Windows).
+	if path[0] == '~' && (path[1] == '/' || path[1] == '\\') {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return path

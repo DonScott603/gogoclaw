@@ -42,6 +42,9 @@ func (l *Loader) Load() (*Config, error) {
 	if err := l.loadNetwork(cfg); err != nil {
 		return nil, err
 	}
+	if err := l.loadMemory(cfg); err != nil {
+		return nil, err
+	}
 
 	if err := Validate(cfg); err != nil {
 		return nil, fmt.Errorf("config: validation: %w", err)
@@ -147,6 +150,13 @@ func (l *Loader) loadChannels(cfg *Config) error {
 // loadNetwork reads the network.yaml file.
 func (l *Loader) loadNetwork(cfg *Config) error {
 	return l.loadYAML("network.yaml", &cfg.Network)
+}
+
+// loadMemory reads memory/config.yaml if it exists.
+// Memory config can also be specified inline in the root config.yaml under the "memory" key.
+// The separate file takes precedence if present.
+func (l *Loader) loadMemory(cfg *Config) error {
+	return l.loadYAMLFile(filepath.Join(l.baseDir, "memory", "config.yaml"), &cfg.Memory)
 }
 
 // loadYAML reads a YAML file relative to baseDir into dest.

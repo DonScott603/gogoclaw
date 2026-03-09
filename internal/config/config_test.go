@@ -111,3 +111,126 @@ func TestValidateRejectsMissingProviderURL(t *testing.T) {
 		t.Error("Validate() should reject provider with empty base_url")
 	}
 }
+
+func TestLoaderMemoryConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	memDir := filepath.Join(dir, "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	memYAML := `
+enabled: true
+embedding:
+  provider: "ollama"
+  model: "nomic-embed-text"
+storage:
+  backend: "chromem-go"
+  path: "~/.gogoclaw/data/vectors"
+retrieval:
+  top_k: 10
+  relevance_threshold: 0.7
+  recency_weight: 0.2
+`
+	if err := os.WriteFile(filepath.Join(memDir, "config.yaml"), []byte(memYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewLoader(dir)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Memory.Enabled {
+		t.Error("memory.enabled should be true")
+	}
+	if cfg.Memory.Embedding.Provider != "ollama" {
+		t.Errorf("memory.embedding.provider = %q, want %q", cfg.Memory.Embedding.Provider, "ollama")
+	}
+	if cfg.Memory.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("memory.embedding.model = %q, want %q", cfg.Memory.Embedding.Model, "nomic-embed-text")
+	}
+	if cfg.Memory.Storage.Path != "~/.gogoclaw/data/vectors" {
+		t.Errorf("memory.storage.path = %q, want %q", cfg.Memory.Storage.Path, "~/.gogoclaw/data/vectors")
+	}
+	if cfg.Memory.Retrieval.TopK != 10 {
+		t.Errorf("memory.retrieval.top_k = %d, want 10", cfg.Memory.Retrieval.TopK)
+	}
+	if cfg.Memory.Retrieval.RelevanceThreshold != 0.7 {
+		t.Errorf("memory.retrieval.relevance_threshold = %f, want 0.7", cfg.Memory.Retrieval.RelevanceThreshold)
+	}
+}
+
+func TestLoaderMemoryInlineConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Memory config inline in root config.yaml.
+	configYAML := `
+memory:
+  enabled: true
+  embedding:
+    provider: "minimax"
+    model: "embed-v1"
+  retrieval:
+    top_k: 5
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewLoader(dir)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Memory.Enabled {
+		t.Error("memory.enabled should be true from inline config")
+	}
+	if cfg.Memory.Embedding.Provider != "minimax" {
+		t.Errorf("memory.embedding.provider = %q, want %q", cfg.Memory.Embedding.Provider, "minimax")
+	}
+}
+
+func TestLoaderMemorySeparateFileOverridesInline(t *testing.T) {
+	dir := t.TempDir()
+
+	// Inline config sets enabled=true with provider "inline-provider".
+	configYAML := `
+memory:
+  enabled: true
+  embedding:
+    provider: "inline-provider"
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Separate file overrides with provider "file-provider".
+	memDir := filepath.Join(dir, "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	memYAML := `
+enabled: true
+embedding:
+  provider: "file-provider"
+  model: "file-model"
+`
+	if err := os.WriteFile(filepath.Join(memDir, "config.yaml"), []byte(memYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewLoader(dir)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Separate file should win since it's loaded after the inline config.
+	if cfg.Memory.Embedding.Provider != "file-provider" {
+		t.Errorf("memory.embedding.provider = %q, want %q (separate file should override inline)", cfg.Memory.Embedding.Provider, "file-provider")
+	}
+}
