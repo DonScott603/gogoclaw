@@ -1,0 +1,5 @@
+name: "telegram"
+enabled: false
+token_env: "GOGOCLAW_TELEGRAM_TOKEN"
+allowed_users: []
+polling_timeout: 30s

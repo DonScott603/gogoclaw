@@ -1,0 +1,20 @@
+workspace:
+  base: "~/.gogoclaw/workspace"
+  inbox: "~/.gogoclaw/workspace/inbox"
+  outbox: "~/.gogoclaw/workspace/outbox"
+  scratch: "~/.gogoclaw/workspace/scratch"
+  documents: "~/.gogoclaw/workspace/documents"
+
+logging:
+  level: "info"
+  audit:
+    enabled: true
+    path: "~/.gogoclaw/audit/gogoclaw.jsonl"
+    encrypt: false
+
+storage:
+  conversations:
+    path: "~/.gogoclaw/data/conversations.db"
+    encrypt: true
+    passphrase_env: "GOGOCLAW_DB_PASSPHRASE"
+  ephemeral_mode: false

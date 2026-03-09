@@ -1,0 +1,4 @@
+name: "rest"
+enabled: false
+listen: "127.0.0.1:8080"
+api_key_env: "GOGOCLAW_REST_API_KEY"

@@ -1,0 +1,31 @@
+name: "GoGoClaw Assistant"
+system_prompt_file: "base.md"
+
+provider_routing:
+  mode: "cloud-only"
+  provider_chain:
+    - provider: "default"
+      timeout: 60s
+      retry: 1
+
+pii:
+  mode: "disabled"
+
+skills:
+  always_available: true
+  auto_discover: true
+
+context:
+  max_history_tokens: 4096
+  summarization:
+    enabled: true
+    threshold_tokens: 3072
+
+memory:
+  enabled: true
+  top_k: 10
+  relevance_threshold: 0.7
+  recency_weight: 0.2
+
+shell:
+  confirmation: "always"

@@ -1,0 +1,5 @@
+allowlist:
+  - "localhost"
+  - "127.0.0.1"
+deny_all_others: true
+log_blocked: true

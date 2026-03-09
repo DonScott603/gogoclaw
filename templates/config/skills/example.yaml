@@ -1,0 +1,14 @@
+name: "example-skill"
+enabled: true
+permissions:
+  filesystem:
+    read:
+      - "inbox/*"
+      - "documents/*"
+    write:
+      - "outbox/*"
+      - "scratch/*"
+  network: false
+  env_vars: false
+  max_file_size: "10MB"
+  max_execution_time: "30s"

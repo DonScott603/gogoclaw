@@ -1,0 +1,8 @@
+name: "example"
+type: "openai_compatible"
+base_url: "https://api.example.com/v1"
+api_key: ${EXAMPLE_API_KEY}
+default_model: "model-name"
+max_context_tokens: 8192
+timeout: 60s
+retry: 1
