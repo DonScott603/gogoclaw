@@ -17,7 +17,8 @@ func RegisterDiscoverTool(d *Dispatcher) {
 			"properties": {
 				"query": {"type": "string", "description": "Description of what you're trying to do"}
 			},
-			"required": ["query"]
+			"required": ["query"],
+			"additionalProperties": false
 		}`),
 		Fn: discoverToolsStub(),
 	})

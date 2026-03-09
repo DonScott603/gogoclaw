@@ -73,12 +73,12 @@ func (o *OpenAICompat) CountTokens(content string) (int, error) {
 
 // openaiRequest is the request body for the chat completions endpoint.
 type openaiRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream"`
+	Model       string          `json:"model"`
+	Messages    []openaiMessage `json:"messages"`
+	Tools       []Tool          `json:"tools,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	Stream      bool            `json:"stream"`
 }
 
 // openaiResponse is the response body from the chat completions endpoint.
@@ -110,6 +110,42 @@ type openaiToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+}
+
+// openaiMessage is the OpenAI wire format for messages, which differs from our
+// internal Message type in how tool_calls are structured (nested under "function").
+type openaiMessage struct {
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+// convertMessages transforms internal Messages to the OpenAI wire format.
+func convertMessages(msgs []Message) []openaiMessage {
+	out := make([]openaiMessage, len(msgs))
+	for i, m := range msgs {
+		om := openaiMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		for _, tc := range m.ToolCalls {
+			om.ToolCalls = append(om.ToolCalls, openaiToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{
+					Name:      tc.Name,
+					Arguments: string(tc.Arguments),
+				},
+			})
+		}
+		out[i] = om
+	}
+	return out
 }
 
 func (o *OpenAICompat) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
@@ -169,7 +205,7 @@ func (o *OpenAICompat) buildRequest(req ChatRequest, stream bool) openaiRequest 
 	}
 	body := openaiRequest{
 		Model:    model,
-		Messages: req.Messages,
+		Messages: convertMessages(req.Messages),
 		Tools:    req.Tools,
 		Stream:   stream,
 	}

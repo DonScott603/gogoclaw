@@ -23,7 +23,8 @@ func RegisterShellTool(d *Dispatcher, confirm ConfirmFunc) {
 			"properties": {
 				"command": {"type": "string", "description": "The shell command to execute"}
 			},
-			"required": ["command"]
+			"required": ["command"],
+			"additionalProperties": false
 		}`),
 		Fn: shellExecFn(confirm),
 	})

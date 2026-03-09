@@ -19,7 +19,8 @@ func RegisterWebFetchTool(d *Dispatcher) {
 			"properties": {
 				"url": {"type": "string", "description": "The URL to fetch"}
 			},
-			"required": ["url"]
+			"required": ["url"],
+			"additionalProperties": false
 		}`),
 		Fn: webFetchFn(),
 	})

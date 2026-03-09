@@ -16,7 +16,8 @@ func RegisterThinkTool(d *Dispatcher) {
 			"properties": {
 				"thought": {"type": "string", "description": "Your reasoning or analysis"}
 			},
-			"required": ["thought"]
+			"required": ["thought"],
+			"additionalProperties": false
 		}`),
 		Fn: thinkFn(),
 	})

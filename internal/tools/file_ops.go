@@ -21,7 +21,8 @@ func RegisterFileTools(d *Dispatcher, pathValidator *security.PathValidator, wor
 			"properties": {
 				"path": {"type": "string", "description": "File path relative to workspace"}
 			},
-			"required": ["path"]
+			"required": ["path"],
+			"additionalProperties": false
 		}`),
 		Fn: fileReadFn(pathValidator, workspaceBase),
 	})
@@ -35,7 +36,8 @@ func RegisterFileTools(d *Dispatcher, pathValidator *security.PathValidator, wor
 				"path": {"type": "string", "description": "File path relative to workspace"},
 				"content": {"type": "string", "description": "Content to write"}
 			},
-			"required": ["path", "content"]
+			"required": ["path", "content"],
+			"additionalProperties": false
 		}`),
 		Fn: fileWriteFn(pathValidator, workspaceBase),
 	})
@@ -47,7 +49,9 @@ func RegisterFileTools(d *Dispatcher, pathValidator *security.PathValidator, wor
 			"type": "object",
 			"properties": {
 				"path": {"type": "string", "description": "Directory path relative to workspace (default: root)"}
-			}
+			},
+			"required": [],
+			"additionalProperties": false
 		}`),
 		Fn: fileListFn(pathValidator, workspaceBase),
 	})
@@ -61,7 +65,8 @@ func RegisterFileTools(d *Dispatcher, pathValidator *security.PathValidator, wor
 				"pattern": {"type": "string", "description": "Glob pattern to match (e.g., '*.csv')"},
 				"path": {"type": "string", "description": "Directory to search in (default: workspace root)"}
 			},
-			"required": ["pattern"]
+			"required": ["pattern"],
+			"additionalProperties": false
 		}`),
 		Fn: fileSearchFn(pathValidator, workspaceBase),
 	})

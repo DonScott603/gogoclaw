@@ -18,7 +18,8 @@ func RegisterMemoryTools(d *Dispatcher) {
 				"content": {"type": "string", "description": "The fact or information to remember"},
 				"tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags for categorization"}
 			},
-			"required": ["content"]
+			"required": ["content"],
+			"additionalProperties": false
 		}`),
 		Fn: memorySaveStub(),
 	})
@@ -32,7 +33,8 @@ func RegisterMemoryTools(d *Dispatcher) {
 				"query": {"type": "string", "description": "Search query"},
 				"top_k": {"type": "integer", "description": "Number of results to return (default: 5)"}
 			},
-			"required": ["query"]
+			"required": ["query"],
+			"additionalProperties": false
 		}`),
 		Fn: memorySearchStub(),
 	})

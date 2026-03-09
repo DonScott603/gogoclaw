@@ -93,6 +93,32 @@ func New(eng *engine.Engine) *tea.Program {
 	return p
 }
 
+// ConfirmGate holds a settable reference to a tea.Program so the confirm
+// function always sends to the currently-running program instance.
+type ConfirmGate struct {
+	program *tea.Program
+}
+
+// NewConfirmGate returns a ConfirmGate and a ConfirmFunc that can be passed
+// to the tool dispatcher. Call SetProgram before the program starts running.
+func NewConfirmGate() (*ConfirmGate, func(command string) bool) {
+	gate := &ConfirmGate{}
+	fn := func(command string) bool {
+		if gate.program == nil {
+			return false
+		}
+		ch := make(chan bool, 1)
+		gate.program.Send(confirmShellMsg{command: command, resultCh: ch})
+		return <-ch
+	}
+	return gate, fn
+}
+
+// SetProgram sets the tea.Program that will receive confirm messages.
+func (g *ConfirmGate) SetProgram(p *tea.Program) {
+	g.program = p
+}
+
 // NewWithConfirmGate creates a TUI and returns a shell confirmation function
 // that can be passed to the tool dispatcher.
 func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) bool) {

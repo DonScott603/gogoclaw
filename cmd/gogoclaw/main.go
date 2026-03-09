@@ -61,16 +61,11 @@ func main() {
 	}
 	defer store.Close()
 
-	// Create TUI with confirmation gate for shell_exec.
-	// We create the program first so we can pass the confirm function to tools.
-	program, confirmFn := tui.NewWithConfirmGate(nil) // engine set below
+	// Create confirm gate — the program reference is set after construction.
+	gate, confirmFn := tui.NewConfirmGate()
 
 	// Build tool dispatcher with all core tools.
 	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn)
-
-	// Wire tool call/result observers to the TUI.
-	onCall, onResult := tui.ToolCallObserver(program)
-	dispatcher.SetCallbacks(onCall, onResult)
 
 	// Load system prompt.
 	systemPrompt := loadSystemPrompt(configDir, cfg)
@@ -81,7 +76,7 @@ func main() {
 		maxCtx = agent.Context.MaxHistoryTokens
 	}
 
-	// Create engine with full wiring.
+	// Create engine.
 	eng := engine.New(engine.Config{
 		Provider:     p,
 		Dispatcher:   dispatcher,
@@ -89,24 +84,12 @@ func main() {
 		MaxContext:    maxCtx,
 	})
 
-	// Set the engine on the TUI program (it was nil during construction).
-	// We need to recreate the program with the engine now.
-	program, confirmFn = tui.NewWithConfirmGate(eng)
-	dispatcher = tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn)
-	onCall, onResult = tui.ToolCallObserver(program)
-	dispatcher.SetCallbacks(onCall, onResult)
+	// Create the TUI program once with the real engine.
+	program := tui.New(eng)
+	gate.SetProgram(program)
 
-	// Update engine's dispatcher.
-	eng = engine.New(engine.Config{
-		Provider:     p,
-		Dispatcher:   dispatcher,
-		SystemPrompt: systemPrompt,
-		MaxContext:    maxCtx,
-	})
-
-	// Final program with the real engine.
-	program, _ = tui.NewWithConfirmGate(eng)
-	onCall, onResult = tui.ToolCallObserver(program)
+	// Wire tool call/result observers to the TUI.
+	onCall, onResult := tui.ToolCallObserver(program)
 	dispatcher.SetCallbacks(onCall, onResult)
 
 	_ = store // store ready for Phase 2 TUI conversation persistence integration
