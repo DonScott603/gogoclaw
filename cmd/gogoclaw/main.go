@@ -214,6 +214,12 @@ func main() {
 	onCall, onResult := tui.ToolCallObserver(program)
 	dispatcher.SetCallbacks(onCall, onResult)
 
+	// Wire PII warn-mode notifications to the TUI.
+	piiWarnSend := tui.PIIWarnFunc(program)
+	piiGate.SetWarnFn(func(patterns []string, mode pii.Mode) {
+		piiWarnSend(patterns)
+	})
+
 	_ = store // store ready for TUI conversation persistence integration
 
 	if _, err := program.Run(); err != nil {

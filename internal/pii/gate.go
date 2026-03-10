@@ -72,6 +72,14 @@ func (g *Gate) SetConversationOverride(conversationID string, mode Mode) {
 	g.overrides[conversationID] = mode
 }
 
+// SetWarnFn sets or replaces the warn callback. This is useful when the
+// callback depends on a component created after the gate (e.g. the TUI program).
+func (g *Gate) SetWarnFn(fn WarnFunc) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.warnFn = fn
+}
+
 // ClearConversationOverride removes a per-conversation override.
 func (g *Gate) ClearConversationOverride(conversationID string) {
 	g.mu.Lock()

@@ -56,6 +56,11 @@ type confirmShellMsg struct {
 	resultCh chan bool
 }
 
+// piiWarnMsg notifies the TUI of a PII warning in warn mode.
+type piiWarnMsg struct {
+	patterns []string
+}
+
 // errMsg wraps an error for the bubbletea update loop.
 type errMsg struct{ err error }
 
@@ -257,6 +262,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 			return m, nil
 		}
+		// Process content before checking Done so that chunks with both
+		// Content and Done=true (e.g. PII gate block messages) are captured.
+		m.streamBuf += chunk.Content
 		if chunk.Done {
 			if m.streamBuf != "" {
 				m.messages = append(m.messages, chatMessage{role: "assistant", content: m.streamBuf})
@@ -268,7 +276,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, nil
 		}
-		m.streamBuf += chunk.Content
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		return m, waitForChunk(msg.ch)
@@ -292,6 +299,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, chatMessage{
 			role:    "tool",
 			content: fmt.Sprintf("[result: %s] %s", msg.name, display),
+		})
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case piiWarnMsg:
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: fmt.Sprintf("[PII WARNING] Detected sensitive data (%s) — proceeding in warn mode.", strings.Join(msg.patterns, ", ")),
 		})
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
@@ -477,6 +493,15 @@ func ToolCallObserver(p *tea.Program) (
 		p.Send(toolResultMsg{name: name, callID: callID, result: result, isError: isErr})
 	}
 	return
+}
+
+// PIIWarnFunc returns a callback that sends a visible PII warning to the TUI.
+// The returned function matches the signature expected by the PII gate's WarnFn
+// when wrapped with a type conversion in main.go.
+func PIIWarnFunc(p *tea.Program) func(patterns []string) {
+	return func(patterns []string) {
+		p.Send(piiWarnMsg{patterns: patterns})
+	}
 }
 
 func (m model) startStream(text string) tea.Cmd {
