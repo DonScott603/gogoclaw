@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -28,12 +27,6 @@ var version = "dev"
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		fmt.Printf("gogoclaw %s\n", version)
-		return
-	}
-
-	// Temporary: manual WASM skill test.
-	if len(os.Args) > 1 && os.Args[1] == "skill-test" {
-		runSkillTest()
 		return
 	}
 
@@ -378,57 +371,6 @@ func loadSystemPrompt(configDir string, cfg *config.Config) string {
 		}
 	}
 	return "You are GoGoClaw, a helpful AI assistant. You have access to tools for file operations, shell commands, web fetching, and memory. Use them when appropriate."
-}
-
-// runSkillTest is a temporary subcommand for manual WASM skill verification.
-func runSkillTest() {
-	ctx := context.Background()
-
-	// Find the echo.wasm testdata relative to the executable or cwd.
-	wasmPath := filepath.Join("skills", "testdata", "echo", "echo.wasm")
-	if _, err := os.Stat(wasmPath); err != nil {
-		log.Fatalf("skill-test: cannot find %s: %v", wasmPath, err)
-	}
-
-	rt, err := skill.NewRuntime(ctx)
-	if err != nil {
-		log.Fatalf("skill-test: runtime init: %v", err)
-	}
-	defer rt.Close(ctx)
-
-	entry := &skill.SkillEntry{
-		Manifest: &skill.Manifest{
-			Name:        "echo",
-			Version:     "1.0.0",
-			Description: "Echo test skill",
-			Tools: []skill.ToolSpec{
-				{Name: "echo", Description: "Echo back input"},
-			},
-			Permissions: skill.Permissions{MaxExecTime: 10},
-		},
-		Dir:      filepath.Dir(wasmPath),
-		WasmPath: wasmPath,
-	}
-
-	fmt.Println("Loading echo skill...")
-	if err := rt.LoadSkill(ctx, entry); err != nil {
-		log.Fatalf("skill-test: load: %v", err)
-	}
-
-	args, _ := json.Marshal(map[string]string{"message": "hello from manual test"})
-	fmt.Printf("Executing with: %s\n", string(args))
-
-	result, err := rt.Execute(ctx, "echo", args)
-	if err != nil {
-		log.Fatalf("skill-test: execute: %v", err)
-	}
-
-	fmt.Printf("Result: %s\n", string(result))
-
-	if err := rt.UnloadSkill(ctx, "echo"); err != nil {
-		log.Fatalf("skill-test: unload: %v", err)
-	}
-	fmt.Println("Skill unloaded. Done.")
 }
 
 // resolveBuiltinSkillsDir searches multiple candidate locations for the
