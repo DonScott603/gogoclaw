@@ -50,6 +50,11 @@ func (r *Registry) GetSkill(name string) *SkillEntry {
 	return r.skills[name]
 }
 
+// AddSkill adds an externally-loaded skill entry to the registry.
+func (r *Registry) AddSkill(entry *SkillEntry) {
+	r.skills[entry.Manifest.Name] = entry
+}
+
 func (r *Registry) scan() error {
 	entries, err := os.ReadDir(r.baseDir)
 	if err != nil {

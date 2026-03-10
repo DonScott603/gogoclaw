@@ -1,0 +1,24 @@
+name: text
+version: "1.0.0"
+description: Text manipulation utilities — uppercase, lowercase, word count, reverse
+author: GoGoClaw
+tools:
+  - name: text_uppercase
+    description: Convert text to uppercase
+    parameters: '{"type":"object","properties":{"text":{"type":"string","description":"Text to convert"}},"required":["text"],"additionalProperties":false}'
+  - name: text_lowercase
+    description: Convert text to lowercase
+    parameters: '{"type":"object","properties":{"text":{"type":"string","description":"Text to convert"}},"required":["text"],"additionalProperties":false}'
+  - name: text_wordcount
+    description: Count the number of words in text
+    parameters: '{"type":"object","properties":{"text":{"type":"string","description":"Text to count words in"}},"required":["text"],"additionalProperties":false}'
+  - name: text_reverse
+    description: Reverse a string
+    parameters: '{"type":"object","properties":{"text":{"type":"string","description":"Text to reverse"}},"required":["text"],"additionalProperties":false}'
+permissions:
+  filesystem:
+    read_paths: []
+    write_paths: []
+  network:
+    allowed: false
+  max_execution_time: 5

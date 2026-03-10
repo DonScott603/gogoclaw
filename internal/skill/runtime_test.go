@@ -9,16 +9,15 @@ import (
 	"time"
 )
 
-func testdataPath(t *testing.T, name string) string {
+func projectRoot(t *testing.T) string {
 	t.Helper()
-	// Find the project root by walking up from cwd looking for go.mod.
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return filepath.Join(dir, "skills", "testdata", name)
+			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -26,6 +25,16 @@ func testdataPath(t *testing.T, name string) string {
 		}
 		dir = parent
 	}
+}
+
+func testdataPath(t *testing.T, name string) string {
+	t.Helper()
+	return filepath.Join(projectRoot(t), "skills", "testdata", name)
+}
+
+func builtinSkillPath(t *testing.T, name string) string {
+	t.Helper()
+	return filepath.Join(projectRoot(t), "skills", "builtin", name)
 }
 
 func echoEntry(t *testing.T) *SkillEntry {
