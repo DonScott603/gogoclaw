@@ -9,8 +9,10 @@ import (
 	"time"
 )
 
-// RegisterWebFetchTool registers web_fetch with a network allowlist check stub.
-func RegisterWebFetchTool(d *Dispatcher) {
+// RegisterWebFetchTool registers web_fetch with network allowlist enforcement.
+// If transport is non-nil it is used as the HTTP client's RoundTripper so that
+// all requests are validated against the NetworkGuard allowlist.
+func RegisterWebFetchTool(d *Dispatcher, transport http.RoundTripper) {
 	d.Register(ToolDef{
 		Name:        "web_fetch",
 		Description: "Fetch the content of a URL. Subject to network allowlist restrictions.",
@@ -22,7 +24,7 @@ func RegisterWebFetchTool(d *Dispatcher) {
 			"required": ["url"],
 			"additionalProperties": false
 		}`),
-		Fn: webFetchFn(),
+		Fn: webFetchFn(transport),
 	})
 }
 
@@ -30,8 +32,11 @@ type webFetchArgs struct {
 	URL string `json:"url"`
 }
 
-func webFetchFn() ToolFunc {
-	client := &http.Client{Timeout: 30 * time.Second}
+func webFetchFn(transport http.RoundTripper) ToolFunc {
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport, // nil falls back to http.DefaultTransport
+	}
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
 		var a webFetchArgs
 		if err := json.Unmarshal(args, &a); err != nil {
@@ -40,8 +45,6 @@ func webFetchFn() ToolFunc {
 		if a.URL == "" {
 			return "", fmt.Errorf("web_fetch: empty URL")
 		}
-
-		// TODO(phase4): enforce network allowlist via security/network.go
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 		if err != nil {

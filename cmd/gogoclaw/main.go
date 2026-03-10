@@ -69,7 +69,7 @@ func main() {
 	if agent, ok := cfg.Agents["base"]; ok {
 		netGuard.AddAgentAllowlist(agent.Network.AdditionalAllowlist)
 	}
-	_ = netGuard // Used by web_fetch in future; transport available via netGuard.Transport()
+	netTransport := netGuard.Transport("web_fetch")
 
 	// Build provider from config.
 	p, err := buildProvider(cfg)
@@ -164,7 +164,7 @@ func main() {
 	gate, confirmFn := tui.NewConfirmGate()
 
 	// Build tool dispatcher with all core tools.
-	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn, memStore, searchOpts)
+	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn, memStore, searchOpts, netTransport)
 
 	// Load system prompt.
 	systemPrompt := loadSystemPrompt(configDir, cfg)
