@@ -88,7 +88,7 @@ func memorySaveFn(store memory.VectorStore, scrubber SecretScrubber, onScrub Scr
 		if err := store.Store(ctx, doc); err != nil {
 			return "", fmt.Errorf("memory_save: store: %w", err)
 		}
-		return fmt.Sprintf("Memory saved: %q", a.Content), nil
+		return fmt.Sprintf("Memory saved: %q", content), nil
 	}
 }
 
