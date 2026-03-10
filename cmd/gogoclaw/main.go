@@ -183,13 +183,17 @@ func main() {
 		skillReg, _ = skill.NewRegistry(os.TempDir()) // empty fallback
 	}
 
-	// Also scan built-in skills from the binary's directory.
-	exePath, _ := os.Executable()
-	builtinDir := filepath.Join(filepath.Dir(exePath), "skills", "builtin")
-	if builtinReg, err := skill.NewRegistry(builtinDir); err == nil {
-		for _, s := range builtinReg.ListSkills() {
-			skillReg.AddSkill(s)
+	// Scan built-in skills from multiple candidate locations.
+	builtinDir := resolveBuiltinSkillsDir(configDir)
+	if builtinDir != "" {
+		log.Printf("skills: loading built-in skills from %s", builtinDir)
+		if builtinReg, err := skill.NewRegistry(builtinDir); err == nil {
+			for _, s := range builtinReg.ListSkills() {
+				skillReg.AddSkill(s)
+			}
 		}
+	} else {
+		log.Printf("skills: no built-in skills directory found")
 	}
 
 	// Initialize WASM runtime and skill dispatcher.
@@ -425,6 +429,39 @@ func runSkillTest() {
 		log.Fatalf("skill-test: unload: %v", err)
 	}
 	fmt.Println("Skill unloaded. Done.")
+}
+
+// resolveBuiltinSkillsDir searches multiple candidate locations for the
+// built-in skills directory and returns the first one that exists.
+// Candidates: relative to executable, relative to cwd, under config dir,
+// and one level up from executable (for bin/ layouts).
+func resolveBuiltinSkillsDir(configDir string) string {
+	candidates := []string{}
+
+	// Relative to the executable (e.g. ./skills/builtin when binary is at project root).
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "skills", "builtin"),
+			filepath.Join(exeDir, "..", "skills", "builtin"), // bin/ layout: exe in bin/, skills/ at root
+		)
+	}
+
+	// Relative to the current working directory.
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "skills", "builtin"))
+	}
+
+	// Under the config directory (e.g. ~/.gogoclaw/skills/builtin).
+	candidates = append(candidates, filepath.Join(configDir, "skills", "builtin"))
+
+	for _, dir := range candidates {
+		dir = filepath.Clean(dir)
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
 }
 
 func expandHome(path string) string {
