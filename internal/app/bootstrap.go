@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/audit"
+	"github.com/DonScott603/gogoclaw/internal/util"
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/health"
@@ -32,7 +33,7 @@ type AuditDeps struct {
 
 // InitAudit creates and configures the audit logger.
 func InitAudit(cfg *config.Config, configDir string) AuditDeps {
-	auditPath := expandHome(cfg.Logging.Audit.Path)
+	auditPath := util.ExpandHome(cfg.Logging.Audit.Path)
 	if auditPath == "" {
 		auditPath = filepath.Join(configDir, "audit", "gogoclaw.jsonl")
 	}
@@ -119,7 +120,7 @@ func InitStorage(cfg *config.Config, configDir string, secDeps SecurityDeps, aud
 		return StorageDeps{}, fmt.Errorf("workspace: %w", err)
 	}
 
-	dbPath := expandHome(cfg.Storage.Conversations.Path)
+	dbPath := util.ExpandHome(cfg.Storage.Conversations.Path)
 	if dbPath == "" {
 		dbPath = filepath.Join(configDir, "data", "conversations.db")
 	}
@@ -161,7 +162,7 @@ func InitMemory(cfg *config.Config, configDir string, activeProvider provider.Pr
 		return deps
 	}
 
-	vecPath := expandHome(cfg.Memory.Storage.Path)
+	vecPath := util.ExpandHome(cfg.Memory.Storage.Path)
 	if vecPath == "" {
 		vecPath = filepath.Join(configDir, "data", "vectors")
 	}
@@ -443,16 +444,3 @@ func resolveBuiltinSkillsDir(configDir string) string {
 	return ""
 }
 
-func expandHome(path string) string {
-	if len(path) < 2 {
-		return path
-	}
-	if path[0] == '~' && (path[1] == '/' || path[1] == '\\') {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}

@@ -3,11 +3,10 @@ package engine
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/security"
+	"github.com/DonScott603/gogoclaw/internal/util"
 )
 
 // Workspace manages workspace directories and provides a path validator
@@ -25,11 +24,11 @@ type Workspace struct {
 // It expands ~ to the user's home directory and creates missing directories.
 func NewWorkspace(cfg config.WorkspaceConfig) (*Workspace, error) {
 	w := &Workspace{
-		Base:      expandHome(cfg.Base),
-		Inbox:     expandHome(cfg.Inbox),
-		Outbox:    expandHome(cfg.Outbox),
-		Scratch:   expandHome(cfg.Scratch),
-		Documents: expandHome(cfg.Documents),
+		Base:      util.ExpandHome(cfg.Base),
+		Inbox:     util.ExpandHome(cfg.Inbox),
+		Outbox:    util.ExpandHome(cfg.Outbox),
+		Scratch:   util.ExpandHome(cfg.Scratch),
+		Documents: util.ExpandHome(cfg.Documents),
 	}
 
 	// Create all directories.
@@ -50,14 +49,3 @@ func NewWorkspace(cfg config.WorkspaceConfig) (*Workspace, error) {
 	return w, nil
 }
 
-// expandHome replaces a leading ~ with the user's home directory.
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[1:])
-	}
-	return path
-}

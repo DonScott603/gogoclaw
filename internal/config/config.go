@@ -71,78 +71,68 @@ func (l *Loader) loadCoreConfig(cfg *Config) error {
 
 // loadProviders scans the providers/ directory.
 func (l *Loader) loadProviders(cfg *Config) error {
-	dir := filepath.Join(l.baseDir, "providers")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("config: read providers dir: %w", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
-			continue
-		}
+	return l.loadDir("providers", func(path, defaultName string) error {
 		var pc ProviderConfig
-		if err := l.loadYAMLFile(filepath.Join(dir, e.Name()), &pc); err != nil {
-			return fmt.Errorf("config: load provider %s: %w", e.Name(), err)
+		if err := l.loadYAMLFile(path, &pc); err != nil {
+			return err
 		}
 		if pc.Name == "" {
-			pc.Name = e.Name()[:len(e.Name())-5] // strip .yaml
+			pc.Name = defaultName
 		}
 		cfg.Providers[pc.Name] = pc
-	}
-	return nil
+		return nil
+	})
 }
 
 // loadAgents scans the agents/ directory.
 func (l *Loader) loadAgents(cfg *Config) error {
-	dir := filepath.Join(l.baseDir, "agents")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("config: read agents dir: %w", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
-			continue
-		}
+	return l.loadDir("agents", func(path, defaultName string) error {
 		var ac AgentConfig
-		if err := l.loadYAMLFile(filepath.Join(dir, e.Name()), &ac); err != nil {
-			return fmt.Errorf("config: load agent %s: %w", e.Name(), err)
+		if err := l.loadYAMLFile(path, &ac); err != nil {
+			return err
 		}
 		if ac.Name == "" {
-			ac.Name = e.Name()[:len(e.Name())-5]
+			ac.Name = defaultName
 		}
 		cfg.Agents[ac.Name] = ac
-	}
-	return nil
+		return nil
+	})
 }
 
 // loadChannels scans the channels/ directory.
 func (l *Loader) loadChannels(cfg *Config) error {
-	dir := filepath.Join(l.baseDir, "channels")
+	return l.loadDir("channels", func(path, defaultName string) error {
+		var cc ChannelConfig
+		if err := l.loadYAMLFile(path, &cc); err != nil {
+			return err
+		}
+		if cc.Name == "" {
+			cc.Name = defaultName
+		}
+		cfg.Channels[cc.Name] = cc
+		return nil
+	})
+}
+
+// loadDir scans a subdirectory of baseDir for YAML files and calls fn for each.
+// The fn receives the full file path and a default name (filename without .yaml).
+func (l *Loader) loadDir(subdir string, fn func(path, defaultName string) error) error {
+	dir := filepath.Join(l.baseDir, subdir)
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("config: read channels dir: %w", err)
+		return fmt.Errorf("config: read %s dir: %w", subdir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
 			continue
 		}
-		var cc ChannelConfig
-		if err := l.loadYAMLFile(filepath.Join(dir, e.Name()), &cc); err != nil {
-			return fmt.Errorf("config: load channel %s: %w", e.Name(), err)
+		defaultName := e.Name()[:len(e.Name())-5] // strip .yaml
+		if err := fn(filepath.Join(dir, e.Name()), defaultName); err != nil {
+			return fmt.Errorf("config: load %s %s: %w", subdir, e.Name(), err)
 		}
-		if cc.Name == "" {
-			cc.Name = e.Name()[:len(e.Name())-5]
-		}
-		cfg.Channels[cc.Name] = cc
 	}
 	return nil
 }
