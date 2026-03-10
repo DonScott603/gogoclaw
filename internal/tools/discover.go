@@ -50,10 +50,6 @@ func discoverToolsFn(d *Dispatcher, lister SkillLister) ToolFunc {
 			return "", fmt.Errorf("discover_tools: parse args: %w", err)
 		}
 
-		if lister == nil {
-			return "No additional tools found (skill system not configured).", nil
-		}
-
 		query := strings.ToLower(a.Query)
 		allTools := lister.ListSkillTools()
 		var matches []DiscoverableSkillTool

@@ -82,9 +82,9 @@ func TestDiscoverToolsNoMatch(t *testing.T) {
 	}
 }
 
-func TestDiscoverToolsNilLister(t *testing.T) {
+func TestDiscoverToolsNoOpLister(t *testing.T) {
 	d := NewDispatcher(0)
-	RegisterDiscoverTool(d, nil)
+	RegisterDiscoverTool(d, NoOpSkillLister{})
 
 	args, _ := json.Marshal(map[string]string{"query": "anything"})
 	results := d.Dispatch(context.Background(), []ToolCallRequest{
@@ -94,8 +94,8 @@ func TestDiscoverToolsNilLister(t *testing.T) {
 	if results[0].IsError {
 		t.Fatalf("unexpected error: %s", results[0].Content)
 	}
-	if !strings.Contains(results[0].Content, "not configured") {
-		t.Errorf("expected not configured message, got: %s", results[0].Content)
+	if !strings.Contains(results[0].Content, "No skill tools found") {
+		t.Errorf("expected no match message, got: %s", results[0].Content)
 	}
 }
 

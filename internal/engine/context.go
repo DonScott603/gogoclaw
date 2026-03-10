@@ -27,6 +27,7 @@ func NewContextAssembler(maxContextTokens int, counter provider.Provider) *Conte
 	return &ContextAssembler{
 		maxContextTokens: maxContextTokens,
 		counter:          counter,
+		memoryStore:      memory.NoOpVectorStore{},
 	}
 }
 
@@ -89,7 +90,7 @@ func (ca *ContextAssembler) Assemble(
 
 // enrichWithMemories retrieves relevant memories and appends them to the system prompt.
 func (ca *ContextAssembler) enrichWithMemories(systemPrompt string, history []provider.Message) string {
-	if ca.memoryStore == nil || len(history) == 0 {
+	if len(history) == 0 {
 		return systemPrompt
 	}
 

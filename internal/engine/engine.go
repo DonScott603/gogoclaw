@@ -16,13 +16,25 @@ import (
 // maxToolRounds limits how many tool call round-trips before we stop.
 const maxToolRounds = 10
 
+// Summarizer abstracts rolling summarization of conversation history.
+type Summarizer interface {
+	MaybeSummarize(ctx context.Context, history []provider.Message, conversationID string) (*memory.SummarizeResult, error)
+}
+
+// NoOpSummarizer is a Summarizer that never summarizes.
+type NoOpSummarizer struct{}
+
+func (NoOpSummarizer) MaybeSummarize(context.Context, []provider.Message, string) (*memory.SummarizeResult, error) {
+	return nil, nil
+}
+
 // Engine is the core agent orchestrator. It manages conversation history,
 // routes messages through the LLM provider, and dispatches tool calls.
 type Engine struct {
 	provider     provider.Provider
 	dispatcher   *tools.Dispatcher
 	assembler    *ContextAssembler
-	summarizer   *memory.Summarizer
+	summarizer   Summarizer
 	systemPrompt string
 	convID       string // current conversation ID
 	mu           sync.Mutex
@@ -35,16 +47,20 @@ type Config struct {
 	Dispatcher   *tools.Dispatcher
 	SystemPrompt string
 	MaxContext   int
-	Summarizer   *memory.Summarizer
+	Summarizer   Summarizer
 }
 
 // New creates an Engine with the given configuration.
 func New(cfg Config) *Engine {
+	s := cfg.Summarizer
+	if s == nil {
+		s = NoOpSummarizer{}
+	}
 	return &Engine{
 		provider:     cfg.Provider,
 		dispatcher:   cfg.Dispatcher,
 		assembler:    NewContextAssembler(cfg.MaxContext, cfg.Provider),
-		summarizer:   cfg.Summarizer,
+		summarizer:   s,
 		systemPrompt: cfg.SystemPrompt,
 	}
 }
@@ -294,9 +310,6 @@ func (e *Engine) continueAfterTools(ctx context.Context) (string, error) {
 
 // maybeSummarize runs rolling summarization if the history exceeds the threshold.
 func (e *Engine) maybeSummarize(ctx context.Context) {
-	if e.summarizer == nil {
-		return
-	}
 	e.mu.Lock()
 	h := make([]provider.Message, len(e.history))
 	copy(h, e.history)

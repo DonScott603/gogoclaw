@@ -66,16 +66,10 @@ func memorySaveFn(store memory.VectorStore, scrubber SecretScrubber, onScrub Scr
 			return "", fmt.Errorf("memory_save: parse args: %w", err)
 		}
 
-		if store == nil {
-			return fmt.Sprintf("Memory noted: %q (memory system not configured)", a.Content), nil
-		}
-
 		content := a.Content
-		if scrubber != nil && scrubber.HasSecrets(content) {
+		if scrubber.HasSecrets(content) {
 			content = scrubber.Scrub(content)
-			if onScrub != nil {
-				onScrub("memory_save", "secrets scrubbed before vector store save")
-			}
+			onScrub("memory_save", "secrets scrubbed before vector store save")
 		}
 
 		doc := memory.MemoryDocument{
@@ -102,10 +96,6 @@ func memorySearchFn(store memory.VectorStore, defaultOpts memory.SearchOptions) 
 		var a memorySearchArgs
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("memory_search: parse args: %w", err)
-		}
-
-		if store == nil {
-			return "No memories found (memory system not configured).", nil
 		}
 
 		topK := a.TopK

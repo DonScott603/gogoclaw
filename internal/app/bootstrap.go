@@ -141,17 +141,19 @@ func InitStorage(cfg *config.Config, configDir string, secDeps SecurityDeps, aud
 type MemoryDeps struct {
 	Store      memory.VectorStore
 	SearchOpts memory.SearchOptions
-	Summarizer *memory.Summarizer
+	Summarizer engine.Summarizer
 	closeFn    func() // internal; called by Close
 }
 
 // InitMemory sets up the vector-backed memory system.
 func InitMemory(cfg *config.Config, configDir string, activeProvider provider.Provider) MemoryDeps {
 	deps := MemoryDeps{
+		Store: memory.NoOpVectorStore{},
 		SearchOpts: memory.SearchOptions{
 			MinSimilarity: 0.5,
 			RecencyWeight: 0.2,
 		},
+		Summarizer: engine.NoOpSummarizer{},
 	}
 
 	if !cfg.Memory.Enabled {
@@ -200,7 +202,8 @@ func InitMemory(cfg *config.Config, configDir string, activeProvider provider.Pr
 	return deps
 }
 
-// Close releases memory resources.
+// Close releases memory resources. Safe to call even when memory is disabled
+// (closeFn defaults to nil, which is a no-op).
 func (d *MemoryDeps) Close() {
 	if d.closeFn != nil {
 		d.closeFn()
@@ -213,6 +216,7 @@ type SkillDeps struct {
 	Runtime    *skill.Runtime
 	Dispatcher *skill.SkillDispatcher
 	Lister     tools.SkillLister
+	closeFn    func()
 }
 
 // InitSkills sets up the skill registry, WASM runtime, and skill dispatcher.
@@ -236,34 +240,37 @@ func InitSkills(configDir string) SkillDeps {
 		log.Printf("skills: no built-in skills directory found")
 	}
 
-	ctx := context.Background()
-	rt, err := skill.NewRuntime(ctx)
-	if err != nil {
-		log.Printf("skills: runtime init failed: %v (continuing without skills)", err)
-		return SkillDeps{Registry: reg}
-	}
-
-	sd := skill.NewSkillDispatcher(reg, rt)
-
 	allSkills := reg.ListSkills()
 	log.Printf("skills: found %d skill(s)", len(allSkills))
 	for _, s := range allSkills {
 		log.Printf("skills:   %s v%s (%d tools)", s.Manifest.Name, s.Manifest.Version, len(s.Manifest.Tools))
 	}
 
+	ctx := context.Background()
+	rt, err := skill.NewRuntime(ctx)
+	if err != nil {
+		log.Printf("skills: runtime init failed: %v (continuing without skills)", err)
+		return SkillDeps{
+			Registry: reg,
+			Lister:   tools.NoOpSkillLister{},
+			closeFn:  func() {},
+		}
+	}
+
+	sd := skill.NewSkillDispatcher(reg, rt)
+
 	return SkillDeps{
 		Registry:   reg,
 		Runtime:    rt,
 		Dispatcher: sd,
 		Lister:     sd,
+		closeFn:    func() { rt.Close(context.Background()) },
 	}
 }
 
 // Close shuts down the WASM runtime.
 func (d *SkillDeps) Close() {
-	if d.Runtime != nil {
-		d.Runtime.Close(context.Background())
-	}
+	d.closeFn()
 }
 
 // EngineDeps holds the engine, tool dispatcher, and health monitor.
@@ -285,9 +292,8 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 		secDeps.NetTransport, secDeps.Scrubber, onScrub, skillDeps.Lister,
 	)
 
-	if skillDeps.Dispatcher != nil {
-		ctx := context.Background()
-		if err := skillDeps.Dispatcher.RegisterSkillTools(ctx, dispatcher); err != nil {
+	if skillDeps.Dispatcher != nil { // no-op path has nil Dispatcher, only real skills register
+		if err := skillDeps.Dispatcher.RegisterSkillTools(context.Background(), dispatcher); err != nil {
 			log.Printf("skills: failed to register skill tools: %v", err)
 		}
 	}
@@ -307,13 +313,11 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 		Summarizer:   memDeps.Summarizer,
 	})
 
-	if memDeps.Store != nil {
-		topK := 5
-		if agent, ok := cfg.Agents["base"]; ok && agent.MemoryConfig.TopK > 0 {
-			topK = agent.MemoryConfig.TopK
-		}
-		eng.Assembler().SetMemoryStore(memDeps.Store, topK, memDeps.SearchOpts)
+	topK := 5
+	if agent, ok := cfg.Agents["base"]; ok && agent.MemoryConfig.TopK > 0 {
+		topK = agent.MemoryConfig.TopK
 	}
+	eng.Assembler().SetMemoryStore(memDeps.Store, topK, memDeps.SearchOpts)
 
 	monitor := health.NewMonitor(health.MonitorConfig{
 		PIIMode: string(secDeps.PIIMode),
