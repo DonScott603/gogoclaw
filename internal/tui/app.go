@@ -419,26 +419,27 @@ func (m model) renderMessages() string {
 	assistantStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 	systemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Italic(true)
+	wrapStyle := lipgloss.NewStyle().Width(m.width)
 
 	for _, msg := range m.messages {
 		switch msg.role {
 		case "user":
 			b.WriteString(userStyle.Render("You") + "\n")
-			b.WriteString(msg.content)
+			b.WriteString(wrapStyle.Render(msg.content))
 		case "assistant":
 			b.WriteString(assistantStyle.Render("Assistant") + "\n")
-			b.WriteString(msg.content)
+			b.WriteString(wrapStyle.Render(msg.content))
 		case "tool":
-			b.WriteString(toolStyle.Render(msg.content))
+			b.WriteString(toolStyle.Render(wrapStyle.Render(msg.content)))
 		case "system":
-			b.WriteString(systemStyle.Render(msg.content))
+			b.WriteString(systemStyle.Render(wrapStyle.Render(msg.content)))
 		}
 		b.WriteString("\n\n")
 	}
 
 	if m.streaming && m.streamBuf != "" {
 		b.WriteString(assistantStyle.Render("Assistant") + "\n")
-		b.WriteString(m.streamBuf)
+		b.WriteString(wrapStyle.Render(m.streamBuf))
 		b.WriteString("▌\n")
 	}
 
