@@ -170,6 +170,58 @@ func TestGateNoPII(t *testing.T) {
 	}
 }
 
+func TestGateStrictBlocksAPIKey(t *testing.T) {
+	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
+
+	resp, err := g.Chat(context.Background(), provider.ChatRequest{
+		Messages: []provider.Message{
+			{Role: "user", Content: "Use this key: sk-abc123def456ghi789jkl012mno345"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content == "ok" {
+		t.Error("strict mode should block API keys sent to cloud provider")
+	}
+}
+
+func TestGateWarnNotifiesOnSecret(t *testing.T) {
+	warned := false
+	var warnedPatterns []string
+	g := NewGate(&mockProvider{}, GateConfig{
+		Mode: ModeWarn,
+		WarnFn: func(patterns []string, mode Mode) {
+			warned = true
+			warnedPatterns = patterns
+		},
+	})
+
+	resp, err := g.Chat(context.Background(), provider.ChatRequest{
+		Messages: []provider.Message{
+			{Role: "user", Content: "Use this key: sk-abc123def456ghi789jkl012mno345"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Error("warn mode should proceed")
+	}
+	if !warned {
+		t.Error("warn callback should have been called for API key")
+	}
+	found := false
+	for _, p := range warnedPatterns {
+		if p == "api_key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected api_key in warned patterns, got %v", warnedPatterns)
+	}
+}
+
 func TestGateStreamStrictBlocks(t *testing.T) {
 	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
 

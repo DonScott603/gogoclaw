@@ -154,6 +154,58 @@ func TestPatternTypes(t *testing.T) {
 	}
 }
 
+func TestDetectAPIKey(t *testing.T) {
+	c := NewClassifier()
+	detections := c.Detect("My key is sk-abc123def456ghi789jkl012mno345")
+	found := false
+	for _, d := range detections {
+		if d.Type == PatternAPIKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected API key detection, got %v", detections)
+	}
+}
+
+func TestDetectBearerToken(t *testing.T) {
+	c := NewClassifier()
+	detections := c.Detect("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+	found := false
+	for _, d := range detections {
+		if d.Type == PatternBearer {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Bearer token detection, got %v", detections)
+	}
+}
+
+func TestDetectAWSKey(t *testing.T) {
+	c := NewClassifier()
+	detections := c.Detect("aws_access_key_id = AKIAIOSFODNN7EXAMPLE")
+	found := false
+	for _, d := range detections {
+		if d.Type == PatternAWSKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected AWS key detection, got %v", detections)
+	}
+}
+
+func TestNoSecretsFalsePositive(t *testing.T) {
+	c := NewClassifier()
+	detections := c.Detect("The sky is blue and the grass is green.")
+	for _, d := range detections {
+		if d.Type == PatternAPIKey || d.Type == PatternBearer || d.Type == PatternAWSKey {
+			t.Errorf("should not detect secrets in clean text, got %v", d)
+		}
+	}
+}
+
 func TestLuhnValid(t *testing.T) {
 	tests := []struct {
 		digits string

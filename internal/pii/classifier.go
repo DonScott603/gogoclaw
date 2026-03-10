@@ -15,6 +15,9 @@ const (
 	PatternEmail      PatternType = "email"
 	PatternCreditCard PatternType = "credit_card"
 	PatternAccount    PatternType = "account_number"
+	PatternAPIKey     PatternType = "api_key"
+	PatternBearer     PatternType = "bearer_token"
+	PatternAWSKey     PatternType = "aws_key"
 )
 
 // Detection represents a single PII detection result.
@@ -40,12 +43,17 @@ type compiledPattern struct {
 func NewClassifier() *Classifier {
 	return &Classifier{
 		patterns: []compiledPattern{
+			// PII patterns.
 			{typ: PatternSSN, re: regexp.MustCompile(`\b(\d{3}-\d{2}-\d{4})\b`)},
 			{typ: PatternSSN, re: regexp.MustCompile(`\b(\d{9})\b`), verify: verifySSN},
 			{typ: PatternPhone, re: regexp.MustCompile(`\b(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})\b`)},
 			{typ: PatternEmail, re: regexp.MustCompile(`\b([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})\b`)},
 			{typ: PatternCreditCard, re: regexp.MustCompile(`\b(\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4})\b`), verify: verifyCreditCard},
 			{typ: PatternAccount, re: regexp.MustCompile(`\b(acct?[#:.\s]*\d{6,12})\b`)},
+			// Secret patterns.
+			{typ: PatternAPIKey, re: regexp.MustCompile(`\b(sk-[a-zA-Z0-9]{20,})\b`)},
+			{typ: PatternBearer, re: regexp.MustCompile(`(?i)(Bearer\s+[a-zA-Z0-9\-_.~+/]{20,})`)},
+			{typ: PatternAWSKey, re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`)},
 		},
 	}
 }
