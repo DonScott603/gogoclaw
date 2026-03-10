@@ -33,43 +33,21 @@ func (sd *SkillDispatcher) RegisterSkillTools(ctx context.Context, d *tools.Disp
 			// Log but continue — don't let one bad skill break all skills.
 			continue
 		}
-		for _, t := range entry.Manifest.Tools {
-			toolName := t.Name
-			skillName := entry.Manifest.Name
-
-			var params json.RawMessage
-			if t.Parameters != "" {
-				params = json.RawMessage(t.Parameters)
-			} else {
-				params = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
-			}
-
-			d.Register(tools.ToolDef{
-				Name:        toolName,
-				Description: fmt.Sprintf("[skill:%s] %s", skillName, t.Description),
-				Parameters:  params,
-				Fn:          sd.makeToolFunc(skillName, toolName),
-			})
-		}
+	}
+	for _, td := range sd.registry.ListToolDescriptors() {
+		d.Register(tools.ToolDef{
+			Name:        td.ToolName,
+			Description: fmt.Sprintf("[skill:%s] %s", td.SkillName, td.ToolDescription),
+			Parameters:  json.RawMessage(td.Parameters),
+			Fn:          sd.makeToolFunc(td.SkillName, td.ToolName),
+		})
 	}
 	return nil
 }
 
 // ListSkillTools implements tools.SkillLister for discover_tools.
-func (sd *SkillDispatcher) ListSkillTools() []tools.DiscoverableSkillTool {
-	var result []tools.DiscoverableSkillTool
-	for _, entry := range sd.registry.ListSkills() {
-		for _, t := range entry.Manifest.Tools {
-			result = append(result, tools.DiscoverableSkillTool{
-				SkillName:       entry.Manifest.Name,
-				SkillDesc:       entry.Manifest.Description,
-				ToolName:        t.Name,
-				ToolDescription: t.Description,
-				Parameters:      t.Parameters,
-			})
-		}
-	}
-	return result
+func (sd *SkillDispatcher) ListSkillTools() []tools.ToolDescriptor {
+	return sd.registry.ListToolDescriptors()
 }
 
 // makeToolFunc creates a ToolFunc that routes a tool call to the WASM runtime.

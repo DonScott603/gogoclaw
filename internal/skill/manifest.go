@@ -80,12 +80,16 @@ func (m *Manifest) Validate() error {
 	if m.Description == "" {
 		return fmt.Errorf("skill: manifest: description is required")
 	}
-	for i, t := range m.Tools {
-		if t.Name == "" {
+	for i := range m.Tools {
+		if m.Tools[i].Name == "" {
 			return fmt.Errorf("skill: manifest: tools[%d]: name is required", i)
 		}
-		if t.Description == "" {
+		if m.Tools[i].Description == "" {
 			return fmt.Errorf("skill: manifest: tools[%d]: description is required", i)
+		}
+		// Normalize: ensure every tool has a valid JSON schema for parameters.
+		if m.Tools[i].Parameters == "" {
+			m.Tools[i].Parameters = `{"type":"object","properties":{},"additionalProperties":false}`
 		}
 	}
 	return nil

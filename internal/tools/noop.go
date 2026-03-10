@@ -4,7 +4,7 @@ package tools
 // default when the skill system is not configured, eliminating nil checks.
 type NoOpSkillLister struct{}
 
-func (NoOpSkillLister) ListSkillTools() []DiscoverableSkillTool { return nil }
+func (NoOpSkillLister) ListSkillTools() []ToolDescriptor { return nil }
 
 // NoOpScrubber is a SecretScrubber that passes text through unchanged.
 // Use it as a safe default when no scrubber is configured.

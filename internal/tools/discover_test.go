@@ -9,16 +9,16 @@ import (
 
 // mockSkillLister implements SkillLister for testing.
 type mockSkillLister struct {
-	tools []DiscoverableSkillTool
+	tools []ToolDescriptor
 }
 
-func (m *mockSkillLister) ListSkillTools() []DiscoverableSkillTool {
+func (m *mockSkillLister) ListSkillTools() []ToolDescriptor {
 	return m.tools
 }
 
 func TestDiscoverToolsFindsMatch(t *testing.T) {
 	lister := &mockSkillLister{
-		tools: []DiscoverableSkillTool{
+		tools: []ToolDescriptor{
 			{
 				SkillName:       "text",
 				SkillDesc:       "Text manipulation utilities",
@@ -56,7 +56,7 @@ func TestDiscoverToolsFindsMatch(t *testing.T) {
 
 func TestDiscoverToolsNoMatch(t *testing.T) {
 	lister := &mockSkillLister{
-		tools: []DiscoverableSkillTool{
+		tools: []ToolDescriptor{
 			{
 				SkillName:       "text",
 				SkillDesc:       "Text utilities",
@@ -101,7 +101,7 @@ func TestDiscoverToolsNoOpLister(t *testing.T) {
 
 func TestDiscoverToolsMultipleMatches(t *testing.T) {
 	lister := &mockSkillLister{
-		tools: []DiscoverableSkillTool{
+		tools: []ToolDescriptor{
 			{SkillName: "text", SkillDesc: "Text utils", ToolName: "text_upper", ToolDescription: "Uppercase text"},
 			{SkillName: "text", SkillDesc: "Text utils", ToolName: "text_lower", ToolDescription: "Lowercase text"},
 			{SkillName: "math", SkillDesc: "Math ops", ToolName: "math_add", ToolDescription: "Add numbers"},

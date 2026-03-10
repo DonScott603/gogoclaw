@@ -9,11 +9,11 @@ import (
 
 // SkillLister provides read-only access to the skill registry for discover_tools.
 type SkillLister interface {
-	ListSkillTools() []DiscoverableSkillTool
+	ListSkillTools() []ToolDescriptor
 }
 
-// DiscoverableSkillTool describes a skill tool for discover_tools search results.
-type DiscoverableSkillTool struct {
+// ToolDescriptor describes a skill tool for discover_tools search results.
+type ToolDescriptor struct {
 	SkillName       string
 	SkillDesc       string
 	ToolName        string
@@ -52,7 +52,7 @@ func discoverToolsFn(d *Dispatcher, lister SkillLister) ToolFunc {
 
 		query := strings.ToLower(a.Query)
 		allTools := lister.ListSkillTools()
-		var matches []DiscoverableSkillTool
+		var matches []ToolDescriptor
 
 		for _, t := range allTools {
 			if matchesQuery(query, t) {
@@ -81,7 +81,7 @@ func discoverToolsFn(d *Dispatcher, lister SkillLister) ToolFunc {
 }
 
 // matchesQuery does a simple keyword match against skill/tool name and description.
-func matchesQuery(query string, t DiscoverableSkillTool) bool {
+func matchesQuery(query string, t ToolDescriptor) bool {
 	fields := strings.ToLower(t.SkillName + " " + t.SkillDesc + " " + t.ToolName + " " + t.ToolDescription)
 	words := strings.Fields(query)
 	for _, w := range words {

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/DonScott603/gogoclaw/internal/tools"
 )
 
 // SkillEntry is a validated, loaded skill ready for use.
@@ -53,6 +55,25 @@ func (r *Registry) GetSkill(name string) *SkillEntry {
 // AddSkill adds an externally-loaded skill entry to the registry.
 func (r *Registry) AddSkill(entry *SkillEntry) {
 	r.skills[entry.Manifest.Name] = entry
+}
+
+// ListToolDescriptors returns a flat list of tool descriptors across all
+// registered skills. This is the canonical projection used by both
+// discover_tools and skill dispatch registration.
+func (r *Registry) ListToolDescriptors() []tools.ToolDescriptor {
+	var result []tools.ToolDescriptor
+	for _, entry := range r.skills {
+		for _, t := range entry.Manifest.Tools {
+			result = append(result, tools.ToolDescriptor{
+				SkillName:       entry.Manifest.Name,
+				SkillDesc:       entry.Manifest.Description,
+				ToolName:        t.Name,
+				ToolDescription: t.Description,
+				Parameters:      t.Parameters,
+			})
+		}
+	}
+	return result
 }
 
 func (r *Registry) scan() error {
