@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/DonScott603/gogoclaw/internal/app"
+	"github.com/DonScott603/gogoclaw/internal/channel"
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/pii"
 	"github.com/DonScott603/gogoclaw/internal/tui"
@@ -70,6 +72,24 @@ func main() {
 	secDeps.PIIGate.SetWarnFn(func(patterns []string, mode pii.Mode) {
 		piiWarnSend(patterns)
 	})
+
+	// Start REST channel if enabled.
+	if restCfg, ok := cfg.Channels["rest"]; ok && restCfg.Enabled {
+		rc := channel.NewREST(channel.RESTConfig{
+			Channel:  restCfg,
+			Engine:   engDeps.Engine,
+			Store:    storeDeps.Store,
+			Monitor:  engDeps.Monitor,
+			InboxDir: storeDeps.Workspace.Inbox,
+		})
+		go func() {
+			log.Printf("rest: listening on %s", restCfg.Listen)
+			if err := rc.Start(context.Background()); err != nil {
+				log.Printf("rest: %v", err)
+			}
+		}()
+		defer rc.Stop(context.Background())
+	}
 
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
