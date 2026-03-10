@@ -20,8 +20,9 @@ const (
 	EventToolCall      EventType = "tool_call"
 	EventNetworkBlock  EventType = "network_blocked"
 	EventPIIDetected   EventType = "pii_detected"
-	EventSkillLoaded   EventType = "skill_loaded"
-	EventConfigChanged EventType = "config_changed"
+	EventSkillLoaded    EventType = "skill_loaded"
+	EventConfigChanged  EventType = "config_changed"
+	EventSecretScrubbed EventType = "secret_scrubbed"
 )
 
 // Event is a single audit log entry.
@@ -31,12 +32,19 @@ type Event struct {
 	Fields    map[string]string `json:"fields,omitempty"`
 }
 
+// Scrubber is the interface for secret scrubbing used by the logger.
+type Scrubber interface {
+	Scrub(text string) string
+	HasSecrets(text string) bool
+}
+
 // Logger writes structured audit events as JSON Lines.
 type Logger struct {
-	mu      sync.Mutex
-	writer  io.Writer
-	closer  io.Closer
-	enabled bool
+	mu       sync.Mutex
+	writer   io.Writer
+	closer   io.Closer
+	enabled  bool
+	scrubber Scrubber
 }
 
 // LoggerConfig configures the audit logger.
@@ -72,10 +80,24 @@ func NewLoggerFromWriter(w io.Writer) *Logger {
 	return &Logger{writer: w, enabled: true}
 }
 
+// SetScrubber attaches a secret scrubber that redacts field values before writing.
+func (l *Logger) SetScrubber(s Scrubber) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.scrubber = s
+}
+
 // Log writes an audit event.
 func (l *Logger) Log(eventType EventType, fields map[string]string) {
 	if !l.enabled {
 		return
+	}
+
+	// Scrub field values to prevent secrets from reaching the log.
+	if l.scrubber != nil {
+		for k, v := range fields {
+			fields[k] = l.scrubber.Scrub(v)
+		}
 	}
 
 	e := Event{
@@ -136,6 +158,14 @@ func (l *Logger) LogPIIDetected(patterns []string, mode, action string) {
 		"patterns": fmt.Sprintf("%v", patterns),
 		"mode":     mode,
 		"action":   action,
+	})
+}
+
+// LogSecretScrubbed logs that secrets were detected and scrubbed from a component.
+func (l *Logger) LogSecretScrubbed(component, context string) {
+	l.Log(EventSecretScrubbed, map[string]string{
+		"component": component,
+		"context":   context,
 	})
 }
 

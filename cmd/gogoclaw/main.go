@@ -71,6 +71,12 @@ func main() {
 	}
 	netTransport := netGuard.Transport("web_fetch")
 
+	// Initialize secret scrubber.
+	scrubber := security.NewSecretScrubber()
+
+	// Attach scrubber to audit logger so field values are redacted.
+	auditLogger.SetScrubber(scrubber)
+
 	// Build provider from config.
 	p, err := buildProvider(cfg)
 	if err != nil {
@@ -163,8 +169,16 @@ func main() {
 	// Create confirm gate — the program reference is set after construction.
 	gate, confirmFn := tui.NewConfirmGate()
 
+	// Secret scrub notification callback — logs an audit event when scrubbing occurs.
+	onScrub := func(component, context string) {
+		auditLogger.LogSecretScrubbed(component, context)
+	}
+
+	// Attach scrubber to conversation store.
+	store.SetScrubber(scrubber, onScrub)
+
 	// Build tool dispatcher with all core tools.
-	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn, memStore, searchOpts, netTransport)
+	dispatcher := tools.NewCoreDispatcher(ws.Validator, ws.Base, confirmFn, memStore, searchOpts, netTransport, scrubber, onScrub)
 
 	// Load system prompt.
 	systemPrompt := loadSystemPrompt(configDir, cfg)
@@ -219,8 +233,6 @@ func main() {
 	piiGate.SetWarnFn(func(patterns []string, mode pii.Mode) {
 		piiWarnSend(patterns)
 	})
-
-	_ = store // store ready for TUI conversation persistence integration
 
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)

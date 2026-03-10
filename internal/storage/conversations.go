@@ -12,9 +12,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Scrubber scrubs secrets from text before persistence.
+type Scrubber interface {
+	Scrub(text string) string
+	HasSecrets(text string) bool
+}
+
+// ScrubNotifyFn is called when secrets are scrubbed, for audit logging.
+type ScrubNotifyFn func(component, context string)
+
 // Store provides conversation and message persistence via SQLite.
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	scrubber Scrubber
+	onScrub  ScrubNotifyFn
 }
 
 // Conversation represents a stored conversation.
@@ -60,6 +71,13 @@ func NewStore(dbPath string) (*Store, error) {
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// SetScrubber attaches a secret scrubber and notification callback.
+// When set, message content is scrubbed before being persisted to SQLite.
+func (s *Store) SetScrubber(scrubber Scrubber, onScrub ScrubNotifyFn) {
+	s.scrubber = scrubber
+	s.onScrub = onScrub
 }
 
 func (s *Store) migrate() error {
@@ -161,7 +179,16 @@ func (s *Store) DeleteConversation(ctx context.Context, id string) error {
 }
 
 // AddMessage inserts a message into a conversation.
+// If a scrubber is configured, message content is scrubbed before persistence.
 func (s *Store) AddMessage(ctx context.Context, m StoredMessage) error {
+	// Scrub secrets from message content before persisting.
+	if s.scrubber != nil && s.scrubber.HasSecrets(m.Content) {
+		m.Content = s.scrubber.Scrub(m.Content)
+		if s.onScrub != nil {
+			s.onScrub("storage", "secrets scrubbed before SQLite persistence")
+		}
+	}
+
 	toolCallsJSON := ""
 	if m.ToolCalls != nil {
 		toolCallsJSON = string(m.ToolCalls)

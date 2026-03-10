@@ -10,9 +10,19 @@ import (
 	"github.com/DonScott603/gogoclaw/internal/memory"
 )
 
+// SecretScrubber scrubs secrets from text. Implemented by security.SecretScrubber.
+type SecretScrubber interface {
+	Scrub(text string) string
+	HasSecrets(text string) bool
+}
+
+// ScrubNotifyFn is called when secrets are scrubbed, for audit logging.
+type ScrubNotifyFn func(component, context string)
+
 // RegisterMemoryTools registers memory_save and memory_search backed by a VectorStore.
 // If store is nil, the tools return stub responses.
-func RegisterMemoryTools(d *Dispatcher, store memory.VectorStore, searchOpts memory.SearchOptions) {
+// If scrubber is non-nil, memory content is scrubbed before saving to the vector store.
+func RegisterMemoryTools(d *Dispatcher, store memory.VectorStore, searchOpts memory.SearchOptions, scrubber SecretScrubber, onScrub ScrubNotifyFn) {
 	d.Register(ToolDef{
 		Name:        "memory_save",
 		Description: "Save a fact or piece of information to long-term memory.",
@@ -25,7 +35,7 @@ func RegisterMemoryTools(d *Dispatcher, store memory.VectorStore, searchOpts mem
 			"required": ["content"],
 			"additionalProperties": false
 		}`),
-		Fn: memorySaveFn(store),
+		Fn: memorySaveFn(store, scrubber, onScrub),
 	})
 
 	d.Register(ToolDef{
@@ -49,7 +59,7 @@ type memorySaveArgs struct {
 	Tags    []string `json:"tags"`
 }
 
-func memorySaveFn(store memory.VectorStore) ToolFunc {
+func memorySaveFn(store memory.VectorStore, scrubber SecretScrubber, onScrub ScrubNotifyFn) ToolFunc {
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
 		var a memorySaveArgs
 		if err := json.Unmarshal(args, &a); err != nil {
@@ -60,9 +70,17 @@ func memorySaveFn(store memory.VectorStore) ToolFunc {
 			return fmt.Sprintf("Memory noted: %q (memory system not configured)", a.Content), nil
 		}
 
+		content := a.Content
+		if scrubber != nil && scrubber.HasSecrets(content) {
+			content = scrubber.Scrub(content)
+			if onScrub != nil {
+				onScrub("memory_save", "secrets scrubbed before vector store save")
+			}
+		}
+
 		doc := memory.MemoryDocument{
 			ID:        fmt.Sprintf("manual-%d", time.Now().UnixNano()),
-			Content:   a.Content,
+			Content:   content,
 			Tags:      a.Tags,
 			Timestamp: time.Now(),
 			Source:    "tool-call",
