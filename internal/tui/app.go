@@ -183,149 +183,39 @@ func (m model) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+// appendAndScroll appends a chat message, re-renders the viewport, and scrolls
+// to the bottom. This is the common pattern for adding visible messages.
+func (m *model) appendAndScroll(msg chatMessage) {
+	m.messages = append(m.messages, msg)
+	m.viewport.SetContent(m.renderMessages())
+	m.viewport.GotoBottom()
+}
 
+// Update delegates to per-message-type handlers.
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Handle confirmation dialog first.
-		if m.showConfirm {
-			return m.handleConfirmKey(msg)
-		}
-
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
-			return m, tea.Quit
-		case tea.KeyCtrlS:
-			if m.streaming {
-				return m, nil
-			}
-			text := strings.TrimSpace(m.textarea.Value())
-			if text == "" {
-				return m, nil
-			}
-			m.textarea.Reset()
-			m.messages = append(m.messages, chatMessage{role: "user", content: text})
-			m.streaming = true
-			m.streamBuf = ""
-			m.err = nil
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
-			return m, m.startStream(text)
-
-		case tea.KeyCtrlN:
-			// New conversation.
-			m.messages = nil
-			m.engine.ClearHistory()
-			m.streamBuf = ""
-			m.streaming = false
-			id := fmt.Sprintf("conv-%d", len(m.conversations))
-			m.conversations = append(m.conversations, conversationEntry{id: id, title: "New Conversation"})
-			m.activeConvoIdx = len(m.conversations) - 1
-			m.viewport.SetContent(m.renderMessages())
-			return m, nil
-
-		case tea.KeyCtrlL:
-			// Toggle conversation list panel.
-			if m.activePanel == panelChat {
-				m.activePanel = panelConversations
-			} else {
-				m.activePanel = panelChat
-			}
-			m.viewport.SetContent(m.renderMessages())
-			return m, nil
-
-		case tea.KeyF2:
-			// Toggle health dashboard panel.
-			if m.activePanel == panelHealth {
-				m.activePanel = panelChat
-			} else {
-				m.activePanel = panelHealth
-			}
-			return m, nil
-		}
-
+		return m.handleKeyMsg(msg)
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		headerHeight := 1
-		inputHeight := 5
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - headerHeight - inputHeight
-		m.textarea.SetWidth(msg.Width)
-		m.viewport.SetContent(m.renderMessages())
-
+		return m.handleWindowResize(msg)
 	case streamChunkMsg:
-		chunk := msg.chunk
-		if chunk.Error != nil {
-			m.err = chunk.Error
-			m.streaming = false
-			return m, nil
-		}
-		// Process content before checking Done so that chunks with both
-		// Content and Done=true (e.g. PII gate block messages) are captured.
-		m.streamBuf += chunk.Content
-		if chunk.Done {
-			if m.streamBuf != "" {
-				m.messages = append(m.messages, chatMessage{role: "assistant", content: m.streamBuf})
-			}
-			m.streamBuf = ""
-			m.streaming = false
-			m.toolActivity = ""
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
-			return m, nil
-		}
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
-		return m, waitForChunk(msg.ch)
-
+		return m.handleStreamChunk(msg)
 	case toolCallMsg:
-		m.toolActivity = fmt.Sprintf("Calling %s...", msg.name)
-		m.messages = append(m.messages, chatMessage{
-			role:    "tool",
-			content: fmt.Sprintf("[tool: %s] %s", msg.name, truncate(msg.args, 200)),
-		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
-		return m, nil
-
+		return m.handleToolCall(msg)
 	case toolResultMsg:
-		m.toolActivity = ""
-		display := truncate(msg.result, 500)
-		if msg.isError {
-			display = "ERROR: " + display
-		}
-		m.messages = append(m.messages, chatMessage{
-			role:    "tool",
-			content: fmt.Sprintf("[result: %s] %s", msg.name, display),
-		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
-		return m, nil
-
+		return m.handleToolResult(msg)
 	case piiWarnMsg:
-		m.messages = append(m.messages, chatMessage{
-			role:    "system",
-			content: fmt.Sprintf("[PII WARNING] Detected sensitive data (%s) — proceeding in warn mode.", strings.Join(msg.patterns, ", ")),
-		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
-		return m, nil
-
+		return m.handlePIIWarn(msg)
 	case confirmShellMsg:
-		m.showConfirm = true
-		m.confirmCmd = msg.command
-		m.confirmCh = msg.resultCh
-		m.viewport.SetContent(m.renderMessages())
-		return m, nil
-
+		return m.handleConfirmShell(msg)
 	case errMsg:
 		m.err = msg.err
 		m.streaming = false
 		return m, nil
 	}
 
+	// Default: forward to textarea and viewport.
+	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	if !m.streaming && !m.showConfirm {
 		m.textarea, cmd = m.textarea.Update(msg)
@@ -333,8 +223,150 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
-
 	return m, tea.Batch(cmds...)
+}
+
+func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showConfirm {
+		return m.handleConfirmKey(msg)
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc:
+		return m, tea.Quit
+
+	case tea.KeyCtrlS:
+		if m.streaming {
+			return m, nil
+		}
+		text := strings.TrimSpace(m.textarea.Value())
+		if text == "" {
+			return m, nil
+		}
+		m.textarea.Reset()
+		m.messages = append(m.messages, chatMessage{role: "user", content: text})
+		m.streaming = true
+		m.streamBuf = ""
+		m.err = nil
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, m.startStream(text)
+
+	case tea.KeyCtrlN:
+		m.messages = nil
+		m.engine.ClearHistory()
+		m.streamBuf = ""
+		m.streaming = false
+		id := fmt.Sprintf("conv-%d", len(m.conversations))
+		m.conversations = append(m.conversations, conversationEntry{id: id, title: "New Conversation"})
+		m.activeConvoIdx = len(m.conversations) - 1
+		m.viewport.SetContent(m.renderMessages())
+		return m, nil
+
+	case tea.KeyCtrlL:
+		if m.activePanel == panelChat {
+			m.activePanel = panelConversations
+		} else {
+			m.activePanel = panelChat
+		}
+		m.viewport.SetContent(m.renderMessages())
+		return m, nil
+
+	case tea.KeyF2:
+		if m.activePanel == panelHealth {
+			m.activePanel = panelChat
+		} else {
+			m.activePanel = panelHealth
+		}
+		return m, nil
+	}
+
+	// Default: forward to textarea and viewport.
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+	if !m.streaming {
+		m.textarea, cmd = m.textarea.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) handleWindowResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width = msg.Width
+	m.height = msg.Height
+	headerHeight := 1
+	inputHeight := 5
+	m.viewport.Width = msg.Width
+	m.viewport.Height = msg.Height - headerHeight - inputHeight
+	m.textarea.SetWidth(msg.Width)
+	m.viewport.SetContent(m.renderMessages())
+	return m, nil
+}
+
+func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
+	chunk := msg.chunk
+	if chunk.Error != nil {
+		m.err = chunk.Error
+		m.streaming = false
+		return m, nil
+	}
+	// Process content before checking Done so that chunks with both
+	// Content and Done=true (e.g. PII gate block messages) are captured.
+	m.streamBuf += chunk.Content
+	if chunk.Done {
+		if m.streamBuf != "" {
+			m.messages = append(m.messages, chatMessage{role: "assistant", content: m.streamBuf})
+		}
+		m.streamBuf = ""
+		m.streaming = false
+		m.toolActivity = ""
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	m.viewport.SetContent(m.renderMessages())
+	m.viewport.GotoBottom()
+	return m, waitForChunk(msg.ch)
+}
+
+func (m model) handleToolCall(msg toolCallMsg) (tea.Model, tea.Cmd) {
+	m.toolActivity = fmt.Sprintf("Calling %s...", msg.name)
+	m.appendAndScroll(chatMessage{
+		role:    "tool",
+		content: fmt.Sprintf("[tool: %s] %s", msg.name, truncate(msg.args, 200)),
+	})
+	return m, nil
+}
+
+func (m model) handleToolResult(msg toolResultMsg) (tea.Model, tea.Cmd) {
+	m.toolActivity = ""
+	display := truncate(msg.result, 500)
+	if msg.isError {
+		display = "ERROR: " + display
+	}
+	m.appendAndScroll(chatMessage{
+		role:    "tool",
+		content: fmt.Sprintf("[result: %s] %s", msg.name, display),
+	})
+	return m, nil
+}
+
+func (m model) handlePIIWarn(msg piiWarnMsg) (tea.Model, tea.Cmd) {
+	m.appendAndScroll(chatMessage{
+		role:    "system",
+		content: fmt.Sprintf("[PII WARNING] Detected sensitive data (%s) — proceeding in warn mode.", strings.Join(msg.patterns, ", ")),
+	})
+	return m, nil
+}
+
+func (m model) handleConfirmShell(msg confirmShellMsg) (tea.Model, tea.Cmd) {
+	m.showConfirm = true
+	m.confirmCmd = msg.command
+	m.confirmCh = msg.resultCh
+	m.viewport.SetContent(m.renderMessages())
+	return m, nil
 }
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -344,16 +376,14 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.confirmCh != nil {
 			m.confirmCh <- true
 		}
-		m.messages = append(m.messages, chatMessage{role: "system", content: fmt.Sprintf("[shell approved] %s", m.confirmCmd)})
-		m.viewport.SetContent(m.renderMessages())
+		m.appendAndScroll(chatMessage{role: "system", content: fmt.Sprintf("[shell approved] %s", m.confirmCmd)})
 		return m, nil
 	case "n", "N", "escape":
 		m.showConfirm = false
 		if m.confirmCh != nil {
 			m.confirmCh <- false
 		}
-		m.messages = append(m.messages, chatMessage{role: "system", content: "[shell denied]"})
-		m.viewport.SetContent(m.renderMessages())
+		m.appendAndScroll(chatMessage{role: "system", content: "[shell denied]"})
 		return m, nil
 	}
 	return m, nil
