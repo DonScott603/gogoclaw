@@ -85,40 +85,7 @@ func (e *Engine) Send(ctx context.Context, userMessage string) (string, error) {
 	e.mu.Unlock()
 
 	e.maybeSummarize(ctx)
-
-	for round := 0; round < maxToolRounds; round++ {
-		messages := e.buildMessages()
-		req := e.buildRequest(messages)
-
-		resp, err := e.provider.Chat(ctx, req)
-		if err != nil {
-			return "", fmt.Errorf("engine: chat: %w", err)
-		}
-
-		// If no tool calls, this is the final response.
-		if len(resp.ToolCalls) == 0 {
-			e.mu.Lock()
-			e.history = append(e.history, provider.Message{Role: "assistant", Content: resp.Content})
-			e.mu.Unlock()
-			return resp.Content, nil
-		}
-
-		// Record the assistant's tool-calling message.
-		e.mu.Lock()
-		e.history = append(e.history, provider.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-		e.mu.Unlock()
-
-		// Dispatch tool calls and add results to history.
-		if err := e.dispatchToolCalls(ctx, resp.ToolCalls); err != nil {
-			return "", err
-		}
-	}
-
-	return "", fmt.Errorf("engine: exceeded maximum tool call rounds (%d)", maxToolRounds)
+	return e.runToolLoop(ctx)
 }
 
 // SendStream sends a user message and returns a channel of streaming chunks.
@@ -168,8 +135,8 @@ func (e *Engine) SendStream(ctx context.Context, userMessage string) (<-chan pro
 				return
 			}
 
-			// Continue with non-streaming follow-up.
-			finalText, err := e.continueAfterTools(ctx)
+			// Continue with non-streaming tool loop.
+			finalText, err := e.runToolLoop(ctx)
 			if err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
 				return
@@ -274,16 +241,17 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, toolCalls []provider.Too
 	return nil
 }
 
-// continueAfterTools runs additional chat rounds after tool results until the
-// LLM produces a final text response (no more tool calls).
-func (e *Engine) continueAfterTools(ctx context.Context) (string, error) {
+// runToolLoop calls the provider in a loop, dispatching any tool calls, until
+// a final text response is produced or maxToolRounds is exceeded. Both Send
+// and SendStream delegate to this after appending the user message to history.
+func (e *Engine) runToolLoop(ctx context.Context) (string, error) {
 	for round := 0; round < maxToolRounds; round++ {
 		messages := e.buildMessages()
 		req := e.buildRequest(messages)
 
 		resp, err := e.provider.Chat(ctx, req)
 		if err != nil {
-			return "", fmt.Errorf("engine: tool follow-up: %w", err)
+			return "", fmt.Errorf("engine: chat: %w", err)
 		}
 
 		if len(resp.ToolCalls) == 0 {
@@ -305,7 +273,7 @@ func (e *Engine) continueAfterTools(ctx context.Context) (string, error) {
 			return "", err
 		}
 	}
-	return "", fmt.Errorf("engine: exceeded maximum tool rounds in follow-up")
+	return "", fmt.Errorf("engine: exceeded maximum tool call rounds (%d)", maxToolRounds)
 }
 
 // maybeSummarize runs rolling summarization if the history exceeds the threshold.
