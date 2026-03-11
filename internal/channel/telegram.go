@@ -20,8 +20,9 @@ import (
 
 // telegramMaxMessage is the safe limit for a single Telegram message.
 // Telegram's hard limit is 4096 chars, but telebot auto-converts text at
-// that boundary to a .txt file attachment. We use 4000 to stay safely under.
-const telegramMaxMessage = 4000
+// or near that boundary to a .txt file attachment. We use 3500 to provide
+// ample margin against any automatic document conversion.
+const telegramMaxMessage = 3500
 
 // TelegramChannel implements Channel using the Telegram Bot API.
 type TelegramChannel struct {
@@ -113,10 +114,8 @@ func (tc *TelegramChannel) Send(_ context.Context, conversationID string, msg ty
 	}
 
 	chat := &tele.Chat{ID: chatID}
-	for _, chunk := range SplitMessage(msg.Text, telegramMaxMessage) {
-		if _, err := tc.bot.Send(chat, chunk); err != nil {
-			return fmt.Errorf("channel: telegram: send: %w", err)
-		}
+	if err := tc.sendChunks(chat, msg.Text); err != nil {
+		return err
 	}
 	// TODO: send outbox files back automatically.
 	return nil
@@ -146,10 +145,8 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
-		if err := c.Send(chunk); err != nil {
-			return err
-		}
+	if err := tc.sendChunks(c.Chat(), resp); err != nil {
+		return err
 	}
 	return nil
 }
@@ -182,10 +179,8 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
-		if err := c.Send(chunk); err != nil {
-			return err
-		}
+	if err := tc.sendChunks(c.Chat(), resp); err != nil {
+		return err
 	}
 	return nil
 }
@@ -219,15 +214,25 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
-		if err := c.Send(chunk); err != nil {
-			return err
-		}
+	if err := tc.sendChunks(c.Chat(), resp); err != nil {
+		return err
 	}
 	return nil
 }
 
 // --- helpers ---
+
+// sendChunks splits text and sends each chunk as a plain text message using
+// bot.Send with explicit SendOptions to prevent telebot from auto-converting
+// long text into .txt file attachments.
+func (tc *TelegramChannel) sendChunks(chat *tele.Chat, text string) error {
+	for _, chunk := range SplitMessage(text, telegramMaxMessage) {
+		if _, err := tc.bot.Send(chat, chunk, &tele.SendOptions{}); err != nil {
+			return fmt.Errorf("channel: telegram: send chunk: %w", err)
+		}
+	}
+	return nil
+}
 
 // checkAccess validates the message is from a private chat and an allowed user.
 // Returns false and sends a rejection if access is denied.
