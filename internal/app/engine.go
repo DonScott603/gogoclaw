@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/DonScott603/gogoclaw/internal/agent"
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/health"
@@ -38,6 +40,7 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 	}
 
 	systemPrompt := loadSystemPrompt(configDir, cfg)
+	systemPrompt = resolvePromptVars(configDir, cfg, systemPrompt)
 
 	maxCtx := 8192
 	if agent, ok := cfg.Agents["base"]; ok && agent.Context.MaxHistoryTokens > 0 {
@@ -69,6 +72,28 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 		Dispatcher: dispatcher,
 		Monitor:    monitor,
 	}
+}
+
+// resolvePromptVars applies template variable resolution to the system prompt.
+func resolvePromptVars(configDir string, cfg *config.Config, prompt string) string {
+	vars := make(map[string]string)
+
+	if ac, ok := cfg.Agents["base"]; ok && ac.Name != "" {
+		vars["agent_name"] = ac.Name
+	}
+
+	// Read user name from user.md if it exists.
+	userPath := filepath.Join(configDir, "agents", "user.md")
+	if data, err := os.ReadFile(userPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "Name: ") {
+				vars["user_name"] = strings.TrimPrefix(line, "Name: ")
+				break
+			}
+		}
+	}
+
+	return agent.ResolveTemplateVars(prompt, vars)
 }
 
 func loadSystemPrompt(configDir string, cfg *config.Config) string {

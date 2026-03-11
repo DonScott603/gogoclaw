@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/DonScott603/gogoclaw/internal/agent"
 	"github.com/DonScott603/gogoclaw/internal/app"
 	"github.com/DonScott603/gogoclaw/internal/channel"
 	"github.com/DonScott603/gogoclaw/internal/config"
@@ -59,6 +61,26 @@ func main() {
 
 	engDeps := app.InitEngine(cfg, configDir, secDeps, storeDeps, memDeps, skillDeps, auditDeps, confirmFn)
 	defer engDeps.Monitor.Stop()
+
+	// Run bootstrap if first launch.
+	if !agent.IsBootstrapped(configDir) {
+		templatesDir := filepath.Join(filepath.Dir(os.Args[0]), "..", "templates", "config")
+		// Try common locations for templates directory.
+		if _, err := os.Stat(templatesDir); os.IsNotExist(err) {
+			templatesDir = filepath.Join("templates", "config")
+		}
+		if err := agent.RunBootstrap(
+			context.Background(), engDeps.Engine, configDir, cfg,
+			templatesDir, os.Stdin, os.Stdout,
+		); err != nil {
+			log.Printf("bootstrap: %v", err)
+		} else {
+			// Reload config to pick up bootstrap changes.
+			if newCfg, err := config.NewLoader(configDir).Load(); err == nil {
+				cfg = newCfg
+			}
+		}
+	}
 
 	// Create TUI and wire observers.
 	program := tui.New(engDeps.Engine, tui.WithHealthMonitor(engDeps.Monitor))
