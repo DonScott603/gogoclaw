@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/DonScott603/gogoclaw/internal/config"
 )
 
 // mockSender returns canned responses in sequence.
@@ -31,10 +29,10 @@ func TestBootstrapInfrastructure(t *testing.T) {
 	configDir := t.TempDir()
 	templatesDir := t.TempDir()
 
-	// Create a minimal template file.
+	// Create minimal template files that templateFiles references.
 	os.MkdirAll(filepath.Join(templatesDir, "agents"), 0755)
 	os.WriteFile(filepath.Join(templatesDir, "config.yaml"), []byte("logging:\n  level: info\n"), 0644)
-	os.WriteFile(filepath.Join(templatesDir, "agents", "base.yaml"), []byte("name: test\n"), 0644)
+	os.WriteFile(filepath.Join(templatesDir, "agents", "base.md"), []byte("You are a test agent."), 0644)
 
 	err := bootstrapInfrastructure(configDir, templatesDir)
 	if err != nil {
@@ -62,6 +60,15 @@ func TestBootstrapInfrastructure(t *testing.T) {
 	if !strings.Contains(string(data), "logging") {
 		t.Error("config.yaml content mismatch")
 	}
+
+	// Verify base.md was copied.
+	data, err = os.ReadFile(filepath.Join(configDir, "agents", "base.md"))
+	if err != nil {
+		t.Fatalf("agents/base.md not copied: %v", err)
+	}
+	if !strings.Contains(string(data), "test agent") {
+		t.Error("base.md content mismatch")
+	}
 }
 
 func TestBootstrapInfrastructureNoOverwrite(t *testing.T) {
@@ -86,59 +93,154 @@ func TestBootstrapInfrastructureNoOverwrite(t *testing.T) {
 	}
 }
 
-func TestParseJSONSummary(t *testing.T) {
+func TestParseJSONSummaryFull(t *testing.T) {
+	text := "Here is your config:\n```json\n" +
+		`{"user_name":"Alice","agent_name":"Jarvis","personality":"casual","work_domain":"engineering","pii_mode":"warn","provider_type":"openai","provider_base_url":"https://api.openai.com/v1","provider_api_key_env":"OPENAI_API_KEY","provider_model":"gpt-4o","telegram_enabled":true,"telegram_token_env":"MY_TG_TOKEN","rest_enabled":true,"rest_port":9090}` +
+		"\n```\nDone!"
+
+	got := parseJSONSummary(text)
+	if got == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if got.UserName != "Alice" {
+		t.Errorf("UserName = %q", got.UserName)
+	}
+	if got.AgentName != "Jarvis" {
+		t.Errorf("AgentName = %q", got.AgentName)
+	}
+	if got.ProviderType != "openai" {
+		t.Errorf("ProviderType = %q", got.ProviderType)
+	}
+	if got.ProviderBaseURL != "https://api.openai.com/v1" {
+		t.Errorf("ProviderBaseURL = %q", got.ProviderBaseURL)
+	}
+	if got.ProviderModel != "gpt-4o" {
+		t.Errorf("ProviderModel = %q", got.ProviderModel)
+	}
+	if !got.TelegramEnabled {
+		t.Error("TelegramEnabled should be true")
+	}
+	if got.TelegramToken != "MY_TG_TOKEN" {
+		t.Errorf("TelegramToken = %q", got.TelegramToken)
+	}
+	if got.RESTPort != 9090 {
+		t.Errorf("RESTPort = %d", got.RESTPort)
+	}
+}
+
+func TestParseJSONSummaryBackwardCompat(t *testing.T) {
+	// Old-style summary with only 4 fields — defaults should fill the rest.
+	text := "```json\n{\"user_name\": \"Bob\", \"personality\": \"concise\", \"work_domain\": \"devops\", \"pii_mode\": \"strict\"}\n```"
+
+	got := parseJSONSummary(text)
+	if got == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if got.UserName != "Bob" {
+		t.Errorf("UserName = %q", got.UserName)
+	}
+	if got.AgentName != "GoGoClaw Assistant" {
+		t.Errorf("AgentName = %q, want default", got.AgentName)
+	}
+	if got.ProviderType != "openai_compatible" {
+		t.Errorf("ProviderType = %q, want default openai_compatible", got.ProviderType)
+	}
+	if got.ProviderModel != "gpt-4o-mini" {
+		t.Errorf("ProviderModel = %q, want default", got.ProviderModel)
+	}
+	if got.RESTPort != 8080 {
+		t.Errorf("RESTPort = %d, want default 8080", got.RESTPort)
+	}
+}
+
+func TestParseJSONSummaryNoBlock(t *testing.T) {
+	got := parseJSONSummary("What is your name?")
+	if got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+}
+
+func TestParseJSONSummaryInvalidJSON(t *testing.T) {
+	got := parseJSONSummary("```json\n{invalid}\n```")
+	if got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+}
+
+func TestParseJSONSummaryEmptyName(t *testing.T) {
+	got := parseJSONSummary("```json\n{\"user_name\": \"\", \"pii_mode\": \"disabled\"}\n```")
+	if got != nil {
+		t.Errorf("expected nil for empty user_name, got %+v", got)
+	}
+}
+
+func TestApplyDefaults(t *testing.T) {
 	tests := []struct {
 		name    string
-		text    string
-		wantNil bool
-		want    *BootstrapSummary
+		input   BootstrapSummary
+		checkFn func(t *testing.T, s *BootstrapSummary)
 	}{
 		{
-			name: "valid_json_block",
-			text: "Here is your summary:\n```json\n{\"user_name\": \"Alice\", \"personality\": \"casual\", \"work_domain\": \"engineering\", \"pii_mode\": \"warn\"}\n```\nDone!",
-			want: &BootstrapSummary{UserName: "Alice", Personality: "casual", WorkDomain: "engineering", PIIMode: "warn"},
+			name:  "openai_defaults",
+			input: BootstrapSummary{UserName: "X", ProviderType: "openai"},
+			checkFn: func(t *testing.T, s *BootstrapSummary) {
+				if s.ProviderBaseURL != "https://api.openai.com/v1" {
+					t.Errorf("ProviderBaseURL = %q", s.ProviderBaseURL)
+				}
+				if s.ProviderKeyEnv != "OPENAI_API_KEY" {
+					t.Errorf("ProviderKeyEnv = %q", s.ProviderKeyEnv)
+				}
+				if s.ProviderModel != "gpt-4o-mini" {
+					t.Errorf("ProviderModel = %q", s.ProviderModel)
+				}
+			},
 		},
 		{
-			name:    "no_json_block",
-			text:    "What is your name?",
-			wantNil: true,
+			name:  "ollama_defaults",
+			input: BootstrapSummary{UserName: "X", ProviderType: "ollama"},
+			checkFn: func(t *testing.T, s *BootstrapSummary) {
+				if s.ProviderBaseURL != "http://localhost:11434/v1" {
+					t.Errorf("ProviderBaseURL = %q", s.ProviderBaseURL)
+				}
+				if s.ProviderKeyEnv != "" {
+					t.Errorf("ProviderKeyEnv = %q, want empty for ollama", s.ProviderKeyEnv)
+				}
+				if s.ProviderModel != "llama3" {
+					t.Errorf("ProviderModel = %q", s.ProviderModel)
+				}
+			},
 		},
 		{
-			name:    "invalid_json",
-			text:    "```json\n{invalid}\n```",
-			wantNil: true,
+			name:  "rest_port_default",
+			input: BootstrapSummary{UserName: "X"},
+			checkFn: func(t *testing.T, s *BootstrapSummary) {
+				if s.RESTPort != 8080 {
+					t.Errorf("RESTPort = %d, want 8080", s.RESTPort)
+				}
+			},
 		},
 		{
-			name:    "empty_user_name",
-			text:    "```json\n{\"user_name\": \"\", \"pii_mode\": \"disabled\"}\n```",
-			wantNil: true,
+			name:  "no_overwrite_existing",
+			input: BootstrapSummary{UserName: "X", ProviderType: "openai", ProviderBaseURL: "https://custom.example.com/v1", ProviderModel: "custom-model", RESTPort: 9999},
+			checkFn: func(t *testing.T, s *BootstrapSummary) {
+				if s.ProviderBaseURL != "https://custom.example.com/v1" {
+					t.Errorf("should not overwrite existing ProviderBaseURL")
+				}
+				if s.ProviderModel != "custom-model" {
+					t.Errorf("should not overwrite existing ProviderModel")
+				}
+				if s.RESTPort != 9999 {
+					t.Errorf("should not overwrite existing RESTPort")
+				}
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseJSONSummary(tt.text)
-			if tt.wantNil {
-				if got != nil {
-					t.Errorf("expected nil, got %+v", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatal("expected non-nil summary")
-			}
-			if got.UserName != tt.want.UserName {
-				t.Errorf("UserName = %q, want %q", got.UserName, tt.want.UserName)
-			}
-			if got.Personality != tt.want.Personality {
-				t.Errorf("Personality = %q, want %q", got.Personality, tt.want.Personality)
-			}
-			if got.WorkDomain != tt.want.WorkDomain {
-				t.Errorf("WorkDomain = %q, want %q", got.WorkDomain, tt.want.WorkDomain)
-			}
-			if got.PIIMode != tt.want.PIIMode {
-				t.Errorf("PIIMode = %q, want %q", got.PIIMode, tt.want.PIIMode)
-			}
+			s := tt.input
+			s.applyDefaults()
+			tt.checkFn(t, &s)
 		})
 	}
 }
@@ -149,18 +251,25 @@ func TestBootstrapIdentityWithMockEngine(t *testing.T) {
 	// Write bootstrap template.
 	os.WriteFile(filepath.Join(templatesDir, "bootstrap.md"), []byte("Ask setup questions."), 0644)
 
-	jsonSummary := "Here is your config:\n```json\n{\"user_name\": \"Bob\", \"personality\": \"concise\", \"work_domain\": \"devops\", \"pii_mode\": \"strict\"}\n```"
+	jsonSummary := "Here is your config:\n```json\n" +
+		`{"user_name":"Bob","agent_name":"Assistant","personality":"concise","work_domain":"devops","pii_mode":"strict","provider_type":"ollama","provider_base_url":"http://localhost:11434/v1","provider_model":"llama3","rest_enabled":true,"rest_port":8080}` +
+		"\n```"
 
 	sender := &mockSender{
 		responses: []string{
 			"Welcome! What is your name?",
 			"Nice, Bob! What personality?",
 			"What's your domain?",
+			"Which provider?",
+			"Model preference?",
+			"PII mode?",
+			"Telegram?",
+			"REST?",
 			jsonSummary,
 		},
 	}
 
-	stdin := strings.NewReader("Bob\nconcise\ndevops\nstrict\n")
+	stdin := strings.NewReader("Bob\nconcise\ndevops\nollama\nllama3\nstrict\nno\nyes, 8080\n")
 	stdout := &bytes.Buffer{}
 
 	summary, err := bootstrapIdentity(context.Background(), sender, templatesDir, stdin, stdout)
@@ -171,24 +280,34 @@ func TestBootstrapIdentityWithMockEngine(t *testing.T) {
 	if summary.UserName != "Bob" {
 		t.Errorf("UserName = %q, want Bob", summary.UserName)
 	}
+	if summary.ProviderType != "ollama" {
+		t.Errorf("ProviderType = %q, want ollama", summary.ProviderType)
+	}
 	if summary.PIIMode != "strict" {
 		t.Errorf("PIIMode = %q, want strict", summary.PIIMode)
 	}
 }
 
-func TestWriteBootstrapResults(t *testing.T) {
+func TestWriteBootstrapResultsFull(t *testing.T) {
 	configDir := t.TempDir()
 	os.MkdirAll(filepath.Join(configDir, "agents"), 0755)
-
-	// Write a base.yaml with pii mode.
-	baseYAML := "name: \"Base\"\npii:\n  mode: \"disabled\"\n"
-	os.WriteFile(filepath.Join(configDir, "agents", "base.yaml"), []byte(baseYAML), 0644)
+	os.MkdirAll(filepath.Join(configDir, "providers"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "channels"), 0755)
 
 	summary := &BootstrapSummary{
-		UserName:    "Alice",
-		Personality: "professional",
-		WorkDomain:  "security",
-		PIIMode:     "strict",
+		UserName:        "Alice",
+		AgentName:       "Jarvis",
+		Personality:     "professional",
+		WorkDomain:      "security",
+		PIIMode:         "strict",
+		ProviderType:    "openai",
+		ProviderBaseURL: "https://api.openai.com/v1",
+		ProviderKeyEnv:  "OPENAI_API_KEY",
+		ProviderModel:   "gpt-4o",
+		TelegramEnabled: true,
+		TelegramToken:   "MY_TG_TOKEN",
+		RESTEnabled:     true,
+		RESTPort:        9090,
 	}
 
 	err := writeBootstrapResults(configDir, summary)
@@ -196,7 +315,7 @@ func TestWriteBootstrapResults(t *testing.T) {
 		t.Fatalf("writeBootstrapResults: %v", err)
 	}
 
-	// Check user.md was created.
+	// Check user.md.
 	data, err := os.ReadFile(filepath.Join(configDir, "agents", "user.md"))
 	if err != nil {
 		t.Fatalf("user.md not created: %v", err)
@@ -206,6 +325,141 @@ func TestWriteBootstrapResults(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "Work Domain: security") {
 		t.Errorf("user.md missing work domain: %s", data)
+	}
+
+	// Check provider yaml.
+	data, err = os.ReadFile(filepath.Join(configDir, "providers", "default.yaml"))
+	if err != nil {
+		t.Fatalf("providers/default.yaml not created: %v", err)
+	}
+	provStr := string(data)
+	if !strings.Contains(provStr, "openai_compatible") {
+		t.Error("provider type should be openai_compatible")
+	}
+	if !strings.Contains(provStr, "api.openai.com") {
+		t.Error("provider should contain openai base_url")
+	}
+	if !strings.Contains(provStr, "${OPENAI_API_KEY}") {
+		t.Error("provider should reference env var with ${} syntax")
+	}
+	if !strings.Contains(provStr, "gpt-4o") {
+		t.Error("provider should contain model name")
+	}
+
+	// Check agent base.yaml.
+	data, err = os.ReadFile(filepath.Join(configDir, "agents", "base.yaml"))
+	if err != nil {
+		t.Fatalf("agents/base.yaml not created: %v", err)
+	}
+	agentStr := string(data)
+	if !strings.Contains(agentStr, "Jarvis") {
+		t.Error("agent name should be Jarvis")
+	}
+	if !strings.Contains(agentStr, `mode: "strict"`) {
+		t.Errorf("agent should have pii mode strict, got: %s", agentStr)
+	}
+	if !strings.Contains(agentStr, "base.md") {
+		t.Error("agent should reference base.md system prompt")
+	}
+	if !strings.Contains(agentStr, "provider: \"default\"") {
+		t.Error("agent should reference default provider")
+	}
+
+	// Check REST channel.
+	data, err = os.ReadFile(filepath.Join(configDir, "channels", "rest.yaml"))
+	if err != nil {
+		t.Fatalf("channels/rest.yaml not created: %v", err)
+	}
+	restStr := string(data)
+	if !strings.Contains(restStr, "enabled: true") {
+		t.Error("REST should be enabled")
+	}
+	if !strings.Contains(restStr, "9090") {
+		t.Error("REST should use port 9090")
+	}
+
+	// Check Telegram channel.
+	data, err = os.ReadFile(filepath.Join(configDir, "channels", "telegram.yaml"))
+	if err != nil {
+		t.Fatalf("channels/telegram.yaml not created: %v", err)
+	}
+	tgStr := string(data)
+	if !strings.Contains(tgStr, "enabled: true") {
+		t.Error("Telegram should be enabled")
+	}
+	if !strings.Contains(tgStr, "MY_TG_TOKEN") {
+		t.Error("Telegram should use custom token env")
+	}
+
+	// Check network.yaml.
+	data, err = os.ReadFile(filepath.Join(configDir, "network.yaml"))
+	if err != nil {
+		t.Fatalf("network.yaml not created: %v", err)
+	}
+	netStr := string(data)
+	if !strings.Contains(netStr, "localhost") {
+		t.Error("network should include localhost")
+	}
+	if !strings.Contains(netStr, "api.openai.com") {
+		t.Error("network should include provider domain")
+	}
+}
+
+func TestWriteBootstrapResultsOllama(t *testing.T) {
+	configDir := t.TempDir()
+	os.MkdirAll(filepath.Join(configDir, "agents"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "providers"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "channels"), 0755)
+
+	summary := &BootstrapSummary{
+		UserName:        "Bob",
+		AgentName:       "GoGoClaw Assistant",
+		Personality:     "casual",
+		WorkDomain:      "general",
+		PIIMode:         "disabled",
+		ProviderType:    "ollama",
+		ProviderBaseURL: "http://localhost:11434/v1",
+		ProviderModel:   "llama3",
+		RESTEnabled:     true,
+		RESTPort:        8080,
+	}
+
+	err := writeBootstrapResults(configDir, summary)
+	if err != nil {
+		t.Fatalf("writeBootstrapResults: %v", err)
+	}
+
+	// Provider should not have api_key line for ollama.
+	data, _ := os.ReadFile(filepath.Join(configDir, "providers", "default.yaml"))
+	provStr := string(data)
+	if strings.Contains(provStr, "api_key") {
+		t.Error("ollama provider should not have api_key line")
+	}
+
+	// Network should not duplicate localhost.
+	data, _ = os.ReadFile(filepath.Join(configDir, "network.yaml"))
+	netStr := string(data)
+	count := strings.Count(netStr, "localhost")
+	if count != 1 {
+		t.Errorf("localhost appears %d times, want exactly 1", count)
+	}
+}
+
+func TestExtractDomain(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://api.openai.com/v1", "api.openai.com"},
+		{"http://localhost:11434/v1", "localhost"},
+		{"http://192.168.1.100:8080/v1", "192.168.1.100"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := extractDomain(tt.url)
+		if got != tt.want {
+			t.Errorf("extractDomain(%q) = %q, want %q", tt.url, got, tt.want)
+		}
 	}
 }
 
@@ -220,27 +474,5 @@ func TestIsBootstrapped(t *testing.T) {
 
 	if !IsBootstrapped(dir) {
 		t.Error("should be bootstrapped after marker created")
-	}
-}
-
-func TestValidateProvidersEmpty(t *testing.T) {
-	cfg := &config.Config{
-		Providers: map[string]config.ProviderConfig{},
-	}
-	err := validateProviders(context.Background(), cfg)
-	if err == nil {
-		t.Error("expected error for empty providers")
-	}
-}
-
-func TestValidateProvidersPresent(t *testing.T) {
-	cfg := &config.Config{
-		Providers: map[string]config.ProviderConfig{
-			"test": {Name: "test", Type: "ollama", BaseURL: "http://localhost:11434"},
-		},
-	}
-	err := validateProviders(context.Background(), cfg)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -71,7 +71,7 @@ func main() {
 		}
 		fmt.Println("Welcome to GoGoClaw! Running first-time setup...")
 		if err := agent.RunBootstrap(
-			context.Background(), engDeps.Engine, configDir, cfg,
+			context.Background(), engDeps.Engine, configDir,
 			templatesDir, os.Stdin, os.Stdout,
 		); err != nil {
 			log.Printf("bootstrap: %v (continuing with defaults)", err)
