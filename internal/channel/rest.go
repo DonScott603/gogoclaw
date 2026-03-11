@@ -287,7 +287,17 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	prompt := "[Channel: REST API] " + req.Text
+	// Prepend file upload context so the LLM knows how to access them.
+	filePrefix := ""
+	if len(savedFiles) > 0 {
+		var parts []string
+		for _, f := range savedFiles {
+			parts = append(parts, "inbox/"+f)
+		}
+		filePrefix = "[Files uploaded: " + strings.Join(parts, ", ") + "] You can read them with file_read using paths relative to the workspace. "
+	}
+
+	prompt := "[Channel: REST API] " + filePrefix + req.Text
 	resp, err := rc.engine.Send(r.Context(), prompt)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: engine: " + err.Error()})

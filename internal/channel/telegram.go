@@ -167,8 +167,11 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 	}
 
 	text := c.Message().Caption
+	fileCtx := fmt.Sprintf("[File uploaded: inbox/%s] You can read it with file_read using path \"inbox/%s\".", doc.FileName, doc.FileName)
 	if text == "" {
-		text = fmt.Sprintf("[uploaded file: %s]", doc.FileName)
+		text = fileCtx
+	} else {
+		text = fileCtx + " " + text
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
@@ -203,8 +206,11 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 	}
 
 	text := c.Message().Caption
+	fileCtx := fmt.Sprintf("[File uploaded: inbox/%s] You can read it with file_read using path \"inbox/%s\".", filename, filename)
 	if text == "" {
-		text = fmt.Sprintf("[uploaded photo: %s]", filename)
+		text = fileCtx
+	} else {
+		text = fileCtx + " " + text
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
