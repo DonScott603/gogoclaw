@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -75,20 +74,15 @@ func main() {
 
 	// Start REST channel if enabled.
 	if restCfg, ok := cfg.Channels["rest"]; ok && restCfg.Enabled {
-		rc := channel.NewREST(channel.RESTConfig{
-			Channel:  restCfg,
-			Engine:   engDeps.Engine,
-			Store:    storeDeps.Store,
-			Monitor:  engDeps.Monitor,
-			InboxDir: storeDeps.Workspace.Inbox,
+		restDeps := app.InitREST(engDeps, storeDeps, auditDeps, channel.RESTConfig{
+			Channel:     restCfg,
+			Engine:      engDeps.Engine,
+			Store:       storeDeps.Store,
+			Monitor:     engDeps.Monitor,
+			AuditLogger: auditDeps.Logger,
+			InboxDir:    storeDeps.Workspace.Inbox,
 		})
-		go func() {
-			log.Printf("rest: listening on %s", restCfg.Listen)
-			if err := rc.Start(context.Background()); err != nil {
-				log.Printf("rest: %v", err)
-			}
-		}()
-		defer rc.Stop(context.Background())
+		defer restDeps.Close()
 	}
 
 	if _, err := program.Run(); err != nil {

@@ -140,7 +140,9 @@ type ChannelConfig struct {
 	AllowedUsers   []string      `yaml:"allowed_users,omitempty" json:"allowed_users,omitempty"`
 	PollingTimeout time.Duration `yaml:"polling_timeout,omitempty" json:"polling_timeout,omitempty"`
 	Listen         string        `yaml:"listen,omitempty" json:"listen,omitempty"`
+	APIKey         string        `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	APIKeyEnv      string        `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
+	AllowedOrigins []string      `yaml:"allowed_origins,omitempty" json:"allowed_origins,omitempty"`
 }
 
 // NetworkConfig defines the global network allowlist.

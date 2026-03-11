@@ -142,6 +142,27 @@ func (s *Store) ListConversations(ctx context.Context) ([]Conversation, error) {
 	return convos, rows.Err()
 }
 
+// ListConversationsPaged returns conversations with limit/offset pagination.
+func (s *Store) ListConversationsPaged(ctx context.Context, limit, offset int) ([]Conversation, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, title, agent, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+		limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list conversations paged: %w", err)
+	}
+	defer rows.Close()
+
+	var convos []Conversation
+	for rows.Next() {
+		var c Conversation
+		if err := rows.Scan(&c.ID, &c.Title, &c.Agent, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("storage: scan conversation: %w", err)
+		}
+		convos = append(convos, c)
+	}
+	return convos, rows.Err()
+}
+
 // GetConversation retrieves a single conversation by ID.
 func (s *Store) GetConversation(ctx context.Context, id string) (*Conversation, error) {
 	var c Conversation
