@@ -6,7 +6,7 @@ import (
 )
 
 func TestSplitMessageShort(t *testing.T) {
-	chunks := SplitMessage("Hello world", 4096)
+	chunks := SplitMessage("Hello world", telegramMaxMessage)
 	if len(chunks) != 1 {
 		t.Fatalf("got %d chunks, want 1", len(chunks))
 	}
@@ -16,20 +16,20 @@ func TestSplitMessageShort(t *testing.T) {
 }
 
 func TestSplitMessageExactLimit(t *testing.T) {
-	text := strings.Repeat("a", 4096)
-	chunks := SplitMessage(text, 4096)
+	text := strings.Repeat("a", telegramMaxMessage)
+	chunks := SplitMessage(text, telegramMaxMessage)
 	if len(chunks) != 1 {
 		t.Fatalf("got %d chunks, want 1", len(chunks))
 	}
 }
 
 func TestSplitMessageParagraphBoundary(t *testing.T) {
-	// Build a message that's over 4096 with a paragraph break in the middle.
+	// Build a message that's over the limit with a paragraph break in the middle.
 	para1 := strings.Repeat("a", 2000)
 	para2 := strings.Repeat("b", 3000)
 	text := para1 + "\n\n" + para2
 
-	chunks := SplitMessage(text, 4096)
+	chunks := SplitMessage(text, telegramMaxMessage)
 	if len(chunks) != 2 {
 		t.Fatalf("got %d chunks, want 2", len(chunks))
 	}
@@ -46,7 +46,7 @@ func TestSplitMessageSentenceBoundary(t *testing.T) {
 	sentence := strings.Repeat("x", 2000) + ". "
 	text := sentence + strings.Repeat("y", 3000)
 
-	chunks := SplitMessage(text, 4096)
+	chunks := SplitMessage(text, telegramMaxMessage)
 	if len(chunks) < 2 {
 		t.Fatalf("got %d chunks, want >= 2", len(chunks))
 	}
@@ -59,7 +59,7 @@ func TestSplitMessageSentenceBoundary(t *testing.T) {
 func TestSplitMessageLargeNoBreaks(t *testing.T) {
 	// A single long word with no natural break points at all.
 	text := strings.Repeat("x", 5000)
-	chunks := SplitMessage(text, 4096)
+	chunks := SplitMessage(text, telegramMaxMessage)
 	if len(chunks) != 2 {
 		t.Fatalf("got %d chunks, want 2", len(chunks))
 	}
@@ -74,9 +74,32 @@ func TestSplitMessageLargeNoBreaks(t *testing.T) {
 }
 
 func TestSplitMessageEmpty(t *testing.T) {
-	chunks := SplitMessage("", 4096)
+	chunks := SplitMessage("", telegramMaxMessage)
 	if len(chunks) != 1 || chunks[0] != "" {
 		t.Errorf("empty string should return [\"\"], got %v", chunks)
+	}
+}
+
+func TestSplitMessageChunksUnderLimit(t *testing.T) {
+	// Verify every chunk produced by SplitMessage is strictly under 4096
+	// so telebot never auto-converts to a .txt file attachment.
+	text := strings.Repeat("word ", 1500) // ~7500 chars
+	chunks := SplitMessage(text, telegramMaxMessage)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if len(c) > telegramMaxMessage {
+			t.Errorf("chunk %d has %d chars, exceeds limit %d", i, len(c), telegramMaxMessage)
+		}
+		if len(c) >= 4096 {
+			t.Errorf("chunk %d has %d chars, would trigger telebot file attachment (>= 4096)", i, len(c))
+		}
+	}
+	// Verify no significant content is lost (trailing spaces may be trimmed at split points).
+	reassembled := strings.Join(chunks, "")
+	if len(reassembled) < len(text)-len(chunks) {
+		t.Errorf("reassembled length = %d, want at least %d", len(reassembled), len(text)-len(chunks))
 	}
 }
 

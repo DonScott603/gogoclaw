@@ -18,6 +18,11 @@ import (
 	tele "gopkg.in/telebot.v4"
 )
 
+// telegramMaxMessage is the safe limit for a single Telegram message.
+// Telegram's hard limit is 4096 chars, but telebot auto-converts text at
+// that boundary to a .txt file attachment. We use 4000 to stay safely under.
+const telegramMaxMessage = 4000
+
 // TelegramChannel implements Channel using the Telegram Bot API.
 type TelegramChannel struct {
 	cfg          config.ChannelConfig
@@ -108,7 +113,7 @@ func (tc *TelegramChannel) Send(_ context.Context, conversationID string, msg ty
 	}
 
 	chat := &tele.Chat{ID: chatID}
-	for _, chunk := range SplitMessage(msg.Text, 4096) {
+	for _, chunk := range SplitMessage(msg.Text, telegramMaxMessage) {
 		if _, err := tc.bot.Send(chat, chunk); err != nil {
 			return fmt.Errorf("channel: telegram: send: %w", err)
 		}
@@ -141,7 +146,7 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, 4096) {
+	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
 		if err := c.Send(chunk); err != nil {
 			return err
 		}
@@ -177,7 +182,7 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, 4096) {
+	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
 		if err := c.Send(chunk); err != nil {
 			return err
 		}
@@ -214,7 +219,7 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 		return c.Send("Error: " + err.Error())
 	}
 
-	for _, chunk := range SplitMessage(resp, 4096) {
+	for _, chunk := range SplitMessage(resp, telegramMaxMessage) {
 		if err := c.Send(chunk); err != nil {
 			return err
 		}
