@@ -85,6 +85,21 @@ func main() {
 		defer restDeps.Close()
 	}
 
+	// Start Telegram channel if enabled.
+	if tgCfg, ok := cfg.Channels["telegram"]; ok && tgCfg.Enabled {
+		tgDeps, err := app.InitTelegram(channel.TelegramConfig{
+			Channel:     tgCfg,
+			Engine:      engDeps.Engine,
+			AuditLogger: auditDeps.Logger,
+			InboxDir:    storeDeps.Workspace.Inbox,
+		})
+		if err != nil {
+			log.Printf("telegram: %v", err)
+		} else {
+			defer tgDeps.Close()
+		}
+	}
+
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}

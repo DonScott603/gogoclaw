@@ -23,7 +23,8 @@ const (
 	EventSkillLoaded    EventType = "skill_loaded"
 	EventConfigChanged  EventType = "config_changed"
 	EventSecretScrubbed EventType = "secret_scrubbed"
-	EventRESTRequest    EventType = "rest_request"
+	EventRESTRequest      EventType = "rest_request"
+	EventTelegramMessage  EventType = "telegram_message"
 )
 
 // Event is a single audit log entry.
