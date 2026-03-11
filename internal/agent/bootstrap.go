@@ -42,10 +42,10 @@ var bootstrapDirs = []string{
 	"channels",
 }
 
-// templateFiles maps source paths (relative to templates/config/) to
+// templateFiles maps source paths (relative to the config templates dir) to
 // destination paths (relative to configDir). Only copied if dest doesn't exist.
 var templateFiles = []struct {
-	Src string // relative to templatesDir
+	Src string // relative to config templates dir (templates/config/)
 	Dst string // relative to configDir
 }{
 	{"config.yaml", "config.yaml"},
@@ -66,10 +66,12 @@ func IsBootstrapped(configDir string) bool {
 // RunBootstrap performs the two-phase bootstrap ritual.
 // Phase 1: create directory structure and copy default templates.
 // Phase 2: interactive Q&A through the engine to configure identity.
+// templatesDir is the root templates/ directory (contains bootstrap.md and config/ subdir).
 // stdin/stdout are used for the interactive conversation.
 func RunBootstrap(ctx context.Context, sender Sender, configDir string, cfg *config.Config, templatesDir string, stdin io.Reader, stdout io.Writer) error {
-	// Phase 1: infrastructure.
-	if err := bootstrapInfrastructure(configDir, templatesDir); err != nil {
+	// Phase 1: infrastructure — template files live under templates/config/.
+	configTemplatesDir := filepath.Join(templatesDir, "config")
+	if err := bootstrapInfrastructure(configDir, configTemplatesDir); err != nil {
 		return fmt.Errorf("agent: bootstrap phase 1: %w", err)
 	}
 
@@ -78,7 +80,7 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, cfg *con
 		return err
 	}
 
-	// Phase 2: identity.
+	// Phase 2: identity — bootstrap.md lives at templates/bootstrap.md.
 	summary, err := bootstrapIdentity(ctx, sender, templatesDir, stdin, stdout)
 	if err != nil {
 		return fmt.Errorf("agent: bootstrap phase 2: %w", err)

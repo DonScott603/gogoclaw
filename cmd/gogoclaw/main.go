@@ -64,20 +64,22 @@ func main() {
 
 	// Run bootstrap if first launch.
 	if !agent.IsBootstrapped(configDir) {
-		templatesDir := filepath.Join(filepath.Dir(os.Args[0]), "..", "templates", "config")
-		// Try common locations for templates directory.
+		templatesDir := filepath.Join(filepath.Dir(os.Args[0]), "templates")
+		// Fall back to templates/ relative to working directory if not found.
 		if _, err := os.Stat(templatesDir); os.IsNotExist(err) {
-			templatesDir = filepath.Join("templates", "config")
+			templatesDir = "templates"
 		}
+		fmt.Println("Welcome to GoGoClaw! Running first-time setup...")
 		if err := agent.RunBootstrap(
 			context.Background(), engDeps.Engine, configDir, cfg,
 			templatesDir, os.Stdin, os.Stdout,
 		); err != nil {
-			log.Printf("bootstrap: %v", err)
+			log.Printf("bootstrap: %v (continuing with defaults)", err)
 		} else {
-			// Reload config to pick up bootstrap changes.
-			if newCfg, err := config.NewLoader(configDir).Load(); err == nil {
-				cfg = newCfg
+			// Reload config to pick up any changes bootstrap wrote.
+			cfg, err = config.NewLoader(configDir).Load()
+			if err != nil {
+				log.Printf("config reload after bootstrap: %v", err)
 			}
 		}
 	}
