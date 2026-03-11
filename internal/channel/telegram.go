@@ -140,7 +140,8 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 
 	tc.notifyHandler(convID, c.Text(), c.Sender())
 
-	resp, err := tc.engine.Send(context.Background(), c.Text())
+	prompt := "[Channel: Telegram] " + c.Text()
+	resp, err := tc.engine.Send(context.Background(), prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -174,7 +175,8 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 	tc.engine.SetConversationID(convID)
 	tc.notifyHandler(convID, text, c.Sender())
 
-	resp, err := tc.engine.Send(context.Background(), text)
+	prompt := "[Channel: Telegram] " + text
+	resp, err := tc.engine.Send(context.Background(), prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -209,7 +211,8 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 	tc.engine.SetConversationID(convID)
 	tc.notifyHandler(convID, text, c.Sender())
 
-	resp, err := tc.engine.Send(context.Background(), text)
+	prompt := "[Channel: Telegram] " + text
+	resp, err := tc.engine.Send(context.Background(), prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}

@@ -287,7 +287,8 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	resp, err := rc.engine.Send(r.Context(), req.Text)
+	prompt := "[Channel: REST API] " + req.Text
+	resp, err := rc.engine.Send(r.Context(), prompt)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: engine: " + err.Error()})
 		return
