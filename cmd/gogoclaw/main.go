@@ -85,6 +85,7 @@ func main() {
 			newPrompt := app.LoadSystemPrompt(configDir, cfg)
 			newPrompt = app.ResolvePromptVars(configDir, cfg, newPrompt)
 			engDeps.Engine.SetSystemPrompt(newPrompt)
+			os.WriteFile(filepath.Join(configDir, "debug_prompt.txt"), []byte(newPrompt), 0644)
 		}
 	}
 
