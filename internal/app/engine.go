@@ -39,8 +39,9 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 		}
 	}
 
-	systemPrompt := loadSystemPrompt(configDir, cfg)
-	systemPrompt = resolvePromptVars(configDir, cfg, systemPrompt)
+	systemPrompt := LoadSystemPrompt(configDir, cfg)
+	systemPrompt = ResolvePromptVars(configDir, cfg, systemPrompt)
+	os.WriteFile(filepath.Join(configDir, "debug_prompt.txt"), []byte(systemPrompt), 0644)
 	log.Printf("DEBUG system prompt (first 200): %.200s", systemPrompt)
 
 	maxCtx := 8192
@@ -75,8 +76,8 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 	}
 }
 
-// resolvePromptVars applies template variable resolution to the system prompt.
-func resolvePromptVars(configDir string, cfg *config.Config, prompt string) string {
+// ResolvePromptVars applies template variable resolution to the system prompt.
+func ResolvePromptVars(configDir string, cfg *config.Config, prompt string) string {
 	vars := make(map[string]string)
 
 	if ac, ok := cfg.Agents["base"]; ok && ac.Name != "" {
@@ -97,7 +98,8 @@ func resolvePromptVars(configDir string, cfg *config.Config, prompt string) stri
 	return agent.ResolveTemplateVars(prompt, vars)
 }
 
-func loadSystemPrompt(configDir string, cfg *config.Config) string {
+// LoadSystemPrompt reads the system prompt from the agent's prompt file or returns a default.
+func LoadSystemPrompt(configDir string, cfg *config.Config) string {
 	if agent, ok := cfg.Agents["base"]; ok && agent.SystemPromptFile != "" {
 		path := filepath.Join(configDir, "agents", agent.SystemPromptFile)
 		data, err := os.ReadFile(path)

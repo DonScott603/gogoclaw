@@ -173,6 +173,13 @@ func (e *Engine) SetHistory(history []provider.Message) {
 	e.history = history
 }
 
+// SetSystemPrompt updates the engine's system prompt (thread-safe).
+func (e *Engine) SetSystemPrompt(prompt string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.systemPrompt = prompt
+}
+
 // ClearHistory resets the conversation history.
 func (e *Engine) ClearHistory() {
 	e.mu.Lock()

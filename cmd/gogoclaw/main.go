@@ -81,6 +81,10 @@ func main() {
 			if err != nil {
 				log.Printf("config reload after bootstrap: %v", err)
 			}
+			// Reinitialize system prompt with post-bootstrap config.
+			newPrompt := app.LoadSystemPrompt(configDir, cfg)
+			newPrompt = app.ResolvePromptVars(configDir, cfg, newPrompt)
+			engDeps.Engine.SetSystemPrompt(newPrompt)
 		}
 	}
 
