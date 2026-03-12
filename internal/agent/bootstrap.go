@@ -13,6 +13,15 @@ import (
 	"strings"
 )
 
+// ProviderSummary holds configuration for a single LLM provider.
+type ProviderSummary struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url"`
+	KeyEnv  string `json:"api_key_env"`
+	Model   string `json:"model"`
+}
+
 // BootstrapSummary is the JSON output parsed from the LLM's bootstrap response.
 type BootstrapSummary struct {
 	UserName        string `json:"user_name"`
@@ -28,6 +37,12 @@ type BootstrapSummary struct {
 	TelegramToken   string `json:"telegram_token_env"`
 	RESTEnabled     bool   `json:"rest_enabled"`
 	RESTPort        int    `json:"rest_port"`
+	RESTKeyEnv      string `json:"rest_api_key_env"`
+
+	// Providers holds multiple provider configs. If populated, these take
+	// precedence over the single-provider fields above. The first entry is
+	// the primary provider.
+	Providers []ProviderSummary `json:"providers,omitempty"`
 }
 
 // applyDefaults fills zero-value fields with sensible defaults.
@@ -70,6 +85,58 @@ func (s *BootstrapSummary) applyDefaults() {
 	if s.RESTPort == 0 {
 		s.RESTPort = 8080
 	}
+	if s.RESTKeyEnv == "" {
+		s.RESTKeyEnv = "GOGOCLAW_REST_API_KEY"
+	}
+
+	// Apply defaults for each provider in the multi-provider list.
+	for i := range s.Providers {
+		applyProviderDefaults(&s.Providers[i])
+	}
+
+	// If no multi-provider list, synthesize one from single-provider fields.
+	if len(s.Providers) == 0 {
+		s.Providers = []ProviderSummary{{
+			Name:    "default",
+			Type:    s.ProviderType,
+			BaseURL: s.ProviderBaseURL,
+			KeyEnv:  s.ProviderKeyEnv,
+			Model:   s.ProviderModel,
+		}}
+	}
+}
+
+// applyProviderDefaults fills zero-value fields on a single ProviderSummary.
+func applyProviderDefaults(p *ProviderSummary) {
+	if p.Type == "" {
+		p.Type = "openai_compatible"
+	}
+	if p.BaseURL == "" {
+		switch p.Type {
+		case "openai":
+			p.BaseURL = "https://api.openai.com/v1"
+		case "ollama":
+			p.BaseURL = "http://localhost:11434/v1"
+		default:
+			p.BaseURL = "https://api.openai.com/v1"
+		}
+	}
+	if p.KeyEnv == "" && p.Type == "openai" {
+		p.KeyEnv = "OPENAI_API_KEY"
+	}
+	if p.Model == "" {
+		switch p.Type {
+		case "openai":
+			p.Model = "gpt-4o-mini"
+		case "ollama":
+			p.Model = "llama3"
+		default:
+			p.Model = "gpt-4o-mini"
+		}
+	}
+	if p.Name == "" {
+		p.Name = "default"
+	}
 }
 
 // Sender abstracts the engine.Send method for testing.
@@ -107,6 +174,9 @@ func IsBootstrapped(configDir string) bool {
 	_, err := os.Stat(filepath.Join(configDir, "initialized"))
 	return err == nil
 }
+
+// ErrSetupCancelled is returned when the user cancels bootstrap.
+var ErrSetupCancelled = fmt.Errorf("setup cancelled by user")
 
 // RunBootstrap performs the two-phase bootstrap ritual.
 // Phase 1: create directory structure and copy default templates.
@@ -193,7 +263,17 @@ func bootstrapIdentity(ctx context.Context, sender Sender, templatesDir string, 
 
 		// Check if the response contains a JSON summary block.
 		if summary := parseJSONSummary(resp); summary != nil {
-			return summary, nil
+			// Ask for user confirmation before proceeding.
+			fmt.Fprint(stdout, "\n> ")
+			if !scanner.Scan() {
+				return nil, fmt.Errorf("unexpected end of input")
+			}
+			answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+			if answer == "y" || answer == "yes" {
+				return summary, nil
+			}
+			fmt.Fprintln(stdout, "Setup cancelled. Run GoGoClaw again to restart setup.")
+			return nil, ErrSetupCancelled
 		}
 
 		fmt.Fprint(stdout, "\n> ")
@@ -241,7 +321,7 @@ func writeBootstrapResults(configDir string, summary *BootstrapSummary) error {
 	if err := writeUserMD(configDir, summary); err != nil {
 		return err
 	}
-	if err := writeProviderYAML(configDir, summary); err != nil {
+	if err := writeProviderYAMLs(configDir, summary); err != nil {
 		return err
 	}
 	if err := writeAgentBaseYAML(configDir, summary); err != nil {
@@ -266,34 +346,46 @@ func writeUserMD(configDir string, s *BootstrapSummary) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func writeProviderYAML(configDir string, s *BootstrapSummary) error {
-	providerType := s.ProviderType
-	if providerType == "openai" {
-		providerType = "openai_compatible"
+// writeProviderYAMLs writes a separate YAML file for each provider.
+func writeProviderYAMLs(configDir string, s *BootstrapSummary) error {
+	for _, p := range s.Providers {
+		providerType := p.Type
+		if providerType == "openai" {
+			providerType = "openai_compatible"
+		}
+
+		apiKeyLine := ""
+		if p.KeyEnv != "" {
+			apiKeyLine = fmt.Sprintf("api_key: ${%s}\n", p.KeyEnv)
+		}
+
+		content := fmt.Sprintf("name: %q\ntype: %q\nbase_url: %q\n%sdefault_model: %q\nmax_context_tokens: 8192\ntimeout: 60s\nretry: 1\n",
+			p.Name, providerType, p.BaseURL, apiKeyLine, p.Model)
+
+		path := filepath.Join(configDir, "providers", p.Name+".yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write provider %s: %w", p.Name, err)
+		}
 	}
-
-	apiKeyLine := ""
-	if s.ProviderKeyEnv != "" {
-		apiKeyLine = fmt.Sprintf("api_key: ${%s}\n", s.ProviderKeyEnv)
-	}
-
-	content := fmt.Sprintf("name: \"default\"\ntype: %q\nbase_url: %q\n%sdefault_model: %q\nmax_context_tokens: 8192\ntimeout: 60s\nretry: 1\n",
-		providerType, s.ProviderBaseURL, apiKeyLine, s.ProviderModel)
-
-	path := filepath.Join(configDir, "providers", "default.yaml")
-	return os.WriteFile(path, []byte(content), 0644)
+	return nil
 }
 
 func writeAgentBaseYAML(configDir string, s *BootstrapSummary) error {
+	// Build provider chain entries.
+	var chainLines []string
+	for _, p := range s.Providers {
+		chainLines = append(chainLines,
+			fmt.Sprintf("    - provider: %q\n      timeout: 60s\n      retry: 1", p.Name))
+	}
+	providerChain := strings.Join(chainLines, "\n")
+
 	content := fmt.Sprintf(`name: %q
 system_prompt_file: "base.md"
 
 provider_routing:
   mode: "cloud-only"
   provider_chain:
-    - provider: "default"
-      timeout: 60s
-      retry: 1
+%s
 
 pii:
   mode: %q
@@ -316,15 +408,19 @@ memory:
 
 shell:
   confirmation: "always"
-`, s.AgentName, s.PIIMode)
+`, s.AgentName, providerChain, s.PIIMode)
 
 	path := filepath.Join(configDir, "agents", "base.yaml")
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func writeRESTChannelYAML(configDir string, s *BootstrapSummary) error {
-	content := fmt.Sprintf("name: \"rest\"\nenabled: %t\nlisten: \"127.0.0.1:%d\"\napi_key_env: \"GOGOCLAW_REST_API_KEY\"\n",
-		s.RESTEnabled, s.RESTPort)
+	keyEnv := s.RESTKeyEnv
+	if keyEnv == "" {
+		keyEnv = "GOGOCLAW_REST_API_KEY"
+	}
+	content := fmt.Sprintf("name: \"rest\"\nenabled: %t\nlisten: \"127.0.0.1:%d\"\napi_key_env: %q\n",
+		s.RESTEnabled, s.RESTPort, keyEnv)
 
 	path := filepath.Join(configDir, "channels", "rest.yaml")
 	return os.WriteFile(path, []byte(content), 0644)
@@ -346,17 +442,12 @@ func writeTelegramChannelYAML(configDir string, s *BootstrapSummary) error {
 func writeNetworkYAML(configDir string, s *BootstrapSummary) error {
 	hosts := []string{"localhost", "127.0.0.1"}
 
-	// Extract domain from provider base URL and add to allowlist.
-	if domain := extractDomain(s.ProviderBaseURL); domain != "" {
-		found := false
-		for _, h := range hosts {
-			if h == domain {
-				found = true
-				break
+	// Extract domains from all provider base URLs and add to allowlist.
+	for _, p := range s.Providers {
+		if domain := extractDomain(p.BaseURL); domain != "" {
+			if !containsStr(hosts, domain) {
+				hosts = append(hosts, domain)
 			}
-		}
-		if !found {
-			hosts = append(hosts, domain)
 		}
 	}
 
@@ -371,6 +462,16 @@ func writeNetworkYAML(configDir string, s *BootstrapSummary) error {
 
 	path := filepath.Join(configDir, "network.yaml")
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+// containsStr checks if a string slice contains a value.
+func containsStr(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // extractDomain returns the hostname from a URL string.
