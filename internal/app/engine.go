@@ -41,6 +41,7 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 
 	systemPrompt := loadSystemPrompt(configDir, cfg)
 	systemPrompt = resolvePromptVars(configDir, cfg, systemPrompt)
+	log.Printf("DEBUG system prompt (first 200): %.200s", systemPrompt)
 
 	maxCtx := 8192
 	if agent, ok := cfg.Agents["base"]; ok && agent.Context.MaxHistoryTokens > 0 {
