@@ -214,6 +214,10 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 		return fmt.Errorf("agent: create marker: %w", err)
 	}
 
+	// Pause so the user can read env var output before TUI takes over.
+	fmt.Fprintln(stdout, "\nBootstrap complete. Press Enter to launch GoGoClaw...")
+	bufio.NewScanner(stdin).Scan()
+
 	return nil
 }
 
