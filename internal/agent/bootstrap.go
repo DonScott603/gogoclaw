@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -194,6 +196,11 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 	summary, err := bootstrapIdentity(ctx, sender, templatesDir, stdin, stdout)
 	if err != nil {
 		return fmt.Errorf("agent: bootstrap phase 2: %w", err)
+	}
+
+	// Phase 3: collect and set environment variables directly (bypasses LLM).
+	if err := collectAndSetEnvVars(summary, stdin, stdout); err != nil {
+		return fmt.Errorf("agent: bootstrap env vars: %w", err)
 	}
 
 	// Write results.
@@ -472,6 +479,119 @@ func containsStr(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// envVarEntry describes an environment variable to collect from the user.
+type envVarEntry struct {
+	Name    string
+	Purpose string
+}
+
+// requiredEnvVars returns the list of env vars that need values based on the summary.
+func requiredEnvVars(s *BootstrapSummary) []envVarEntry {
+	seen := make(map[string]bool)
+	var vars []envVarEntry
+	add := func(name, purpose string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		vars = append(vars, envVarEntry{Name: name, Purpose: purpose})
+	}
+
+	for _, p := range s.Providers {
+		if p.KeyEnv != "" {
+			add(p.KeyEnv, fmt.Sprintf("API key for %s provider (%s)", p.Name, p.Type))
+		}
+	}
+	if s.TelegramEnabled && s.TelegramToken != "" {
+		add(s.TelegramToken, "Telegram bot token")
+	}
+	if s.RESTEnabled && s.RESTKeyEnv != "" {
+		add(s.RESTKeyEnv, "REST API authentication key")
+	}
+	return vars
+}
+
+// collectAndSetEnvVars prompts the user for each required env var value and
+// sets it in the current process and persists it to the OS. Values are never
+// passed through the LLM engine, audit logger, or any persistence layer.
+func collectAndSetEnvVars(summary *BootstrapSummary, stdin io.Reader, stdout io.Writer) error {
+	vars := requiredEnvVars(summary)
+	if len(vars) == 0 {
+		return nil
+	}
+
+	fmt.Fprintln(stdout, "\n--- Environment Variable Setup ---")
+	fmt.Fprintln(stdout, "Enter values for the required environment variables below.")
+	fmt.Fprintln(stdout, "Press Enter to skip any variable you want to set manually later.")
+	fmt.Fprintln(stdout)
+
+	scanner := bufio.NewScanner(stdin)
+	anySkipped := false
+
+	for _, v := range vars {
+		fmt.Fprintf(stdout, "Enter your %s (%s) (or press Enter to skip): ", v.Purpose, v.Name)
+		if !scanner.Scan() {
+			return fmt.Errorf("unexpected end of input")
+		}
+		value := strings.TrimSpace(scanner.Text())
+
+		if value == "" {
+			fmt.Fprintf(stdout, "  Skipped %s. You will need to set it manually before restarting.\n", v.Name)
+			anySkipped = true
+			continue
+		}
+
+		// Set in current process.
+		if err := os.Setenv(v.Name, value); err != nil {
+			return fmt.Errorf("setenv %s: %w", v.Name, err)
+		}
+
+		// Persist to OS.
+		if err := persistEnvVar(v.Name, value); err != nil {
+			fmt.Fprintf(stdout, "  Set %s in current session, but could not persist: %v\n", v.Name, err)
+		} else {
+			fmt.Fprintf(stdout, "  Set %s ✓\n", v.Name)
+		}
+	}
+
+	fmt.Fprintln(stdout)
+	if anySkipped {
+		fmt.Fprintln(stdout, "If you provided all keys above, GoGoClaw is ready to use now. If you skipped any, set them manually and restart.")
+	} else {
+		fmt.Fprintln(stdout, "All environment variables set. GoGoClaw is ready to use.")
+	}
+	return nil
+}
+
+// persistEnvVar saves an environment variable to the OS so it survives restarts.
+// On Windows it uses setx; on macOS it appends to ~/.zshrc; on Linux to ~/.bashrc.
+func persistEnvVar(name, value string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("cmd", "/C", "setx", name, value).Run()
+	default:
+		rcFile := ".bashrc"
+		if runtime.GOOS == "darwin" {
+			rcFile = ".zshrc"
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("home dir: %w", err)
+		}
+		rcPath := filepath.Join(home, rcFile)
+		f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", rcFile, err)
+		}
+		defer f.Close()
+		line := fmt.Sprintf("\nexport %s=%q\n", name, value)
+		if _, err := f.WriteString(line); err != nil {
+			return fmt.Errorf("write %s: %w", rcFile, err)
+		}
+		return nil
+	}
 }
 
 // extractDomain returns the hostname from a URL string.

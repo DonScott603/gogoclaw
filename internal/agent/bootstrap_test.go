@@ -736,3 +736,153 @@ func TestContainsStr(t *testing.T) {
 		t.Error("should not find d")
 	}
 }
+
+func TestRequiredEnvVars(t *testing.T) {
+	s := &BootstrapSummary{
+		TelegramEnabled: true,
+		TelegramToken:   "MY_TG_TOKEN",
+		RESTEnabled:     true,
+		RESTKeyEnv:      "MY_REST_KEY",
+		Providers: []ProviderSummary{
+			{Name: "default", Type: "openai", KeyEnv: "OPENAI_API_KEY"},
+			{Name: "fallback", Type: "ollama"}, // no key
+		},
+	}
+
+	vars := requiredEnvVars(s)
+	if len(vars) != 3 {
+		t.Fatalf("requiredEnvVars len = %d, want 3", len(vars))
+	}
+
+	names := make(map[string]bool)
+	for _, v := range vars {
+		names[v.Name] = true
+	}
+	for _, want := range []string{"OPENAI_API_KEY", "MY_TG_TOKEN", "MY_REST_KEY"} {
+		if !names[want] {
+			t.Errorf("missing env var %s", want)
+		}
+	}
+}
+
+func TestRequiredEnvVarsDedup(t *testing.T) {
+	// Two providers with same key env should only appear once.
+	s := &BootstrapSummary{
+		Providers: []ProviderSummary{
+			{Name: "a", KeyEnv: "SAME_KEY"},
+			{Name: "b", KeyEnv: "SAME_KEY"},
+		},
+	}
+	vars := requiredEnvVars(s)
+	if len(vars) != 1 {
+		t.Errorf("requiredEnvVars len = %d, want 1 (dedup)", len(vars))
+	}
+}
+
+func TestRequiredEnvVarsEmpty(t *testing.T) {
+	// Ollama with no telegram, no REST key — should have no vars.
+	s := &BootstrapSummary{
+		Providers: []ProviderSummary{
+			{Name: "default", Type: "ollama"},
+		},
+	}
+	vars := requiredEnvVars(s)
+	if len(vars) != 0 {
+		t.Errorf("requiredEnvVars len = %d, want 0", len(vars))
+	}
+}
+
+func TestCollectAndSetEnvVarsProvideValues(t *testing.T) {
+	// Use unique env var names to avoid test pollution.
+	varName := "GOGOCLAW_TEST_COLLECT_" + fmt.Sprintf("%d", os.Getpid())
+	defer os.Unsetenv(varName)
+
+	summary := &BootstrapSummary{
+		Providers: []ProviderSummary{
+			{Name: "default", Type: "openai", KeyEnv: varName},
+		},
+	}
+
+	stdin := strings.NewReader("test-secret-value\n")
+	stdout := &bytes.Buffer{}
+
+	err := collectAndSetEnvVars(summary, stdin, stdout)
+	if err != nil {
+		t.Fatalf("collectAndSetEnvVars: %v", err)
+	}
+
+	// Verify env var was set in current process.
+	got := os.Getenv(varName)
+	if got != "test-secret-value" {
+		t.Errorf("os.Getenv(%s) = %q, want %q", varName, got, "test-secret-value")
+	}
+
+	// Verify the actual value is NOT in stdout (security).
+	if strings.Contains(stdout.String(), "test-secret-value") {
+		t.Error("stdout should not contain the actual secret value")
+	}
+
+	// Verify confirmation message is in stdout.
+	if !strings.Contains(stdout.String(), varName+" ✓") {
+		t.Errorf("stdout should contain confirmation, got: %s", stdout.String())
+	}
+}
+
+func TestCollectAndSetEnvVarsSkip(t *testing.T) {
+	varName := "GOGOCLAW_TEST_SKIP_" + fmt.Sprintf("%d", os.Getpid())
+	os.Unsetenv(varName) // ensure clean
+	defer os.Unsetenv(varName)
+
+	summary := &BootstrapSummary{
+		Providers: []ProviderSummary{
+			{Name: "default", Type: "openai", KeyEnv: varName},
+		},
+	}
+
+	// Empty line = skip.
+	stdin := strings.NewReader("\n")
+	stdout := &bytes.Buffer{}
+
+	err := collectAndSetEnvVars(summary, stdin, stdout)
+	if err != nil {
+		t.Fatalf("collectAndSetEnvVars: %v", err)
+	}
+
+	// Env var should NOT be set.
+	got := os.Getenv(varName)
+	if got != "" {
+		t.Errorf("os.Getenv(%s) = %q, want empty (skipped)", varName, got)
+	}
+
+	// Should see skip message.
+	if !strings.Contains(stdout.String(), "Skipped "+varName) {
+		t.Errorf("stdout should contain skip message, got: %s", stdout.String())
+	}
+
+	// Should see the "set them manually" reminder.
+	if !strings.Contains(stdout.String(), "skipped any") {
+		t.Errorf("stdout should contain manual-set reminder, got: %s", stdout.String())
+	}
+}
+
+func TestCollectAndSetEnvVarsNoVars(t *testing.T) {
+	// Summary with no env vars needed (ollama, no telegram, no REST).
+	summary := &BootstrapSummary{
+		Providers: []ProviderSummary{
+			{Name: "default", Type: "ollama"},
+		},
+	}
+
+	stdin := strings.NewReader("")
+	stdout := &bytes.Buffer{}
+
+	err := collectAndSetEnvVars(summary, stdin, stdout)
+	if err != nil {
+		t.Fatalf("collectAndSetEnvVars: %v", err)
+	}
+
+	// Should produce no output when no vars needed.
+	if stdout.Len() != 0 {
+		t.Errorf("expected empty stdout for no env vars, got: %s", stdout.String())
+	}
+}
