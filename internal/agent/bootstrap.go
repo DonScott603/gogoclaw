@@ -295,7 +295,7 @@ func bootstrapIdentity(ctx context.Context, sender Sender, templatesDir string, 
 		}
 		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
-			continue
+			input = "[accept default]"
 		}
 
 		resp, err = sender.Send(ctx, input)
