@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -384,10 +385,10 @@ func TestBootstrapIdentityWithMockEngine(t *testing.T) {
 	}
 
 	// Last line "y" confirms the setup.
-	stdin := strings.NewReader("Bob\nAssistant\nconcise\ndevops\nollama\nllama3\nno\nstrict\nno\nyes, 8080\ndefault\ny\n")
+	scanner := bufio.NewScanner(strings.NewReader("Bob\nAssistant\nconcise\ndevops\nollama\nllama3\nno\nstrict\nno\nyes, 8080\ndefault\ny\n"))
 	stdout := &bytes.Buffer{}
 
-	summary, err := bootstrapIdentity(context.Background(), sender, templatesDir, stdin, stdout)
+	summary, err := bootstrapIdentity(context.Background(), sender, templatesDir, scanner, stdout)
 	if err != nil {
 		t.Fatalf("bootstrapIdentity: %v", err)
 	}
@@ -415,10 +416,10 @@ func TestBootstrapIdentityCancelled(t *testing.T) {
 		responses: []string{jsonSummary},
 	}
 
-	stdin := strings.NewReader("n\n")
+	scanner := bufio.NewScanner(strings.NewReader("n\n"))
 	stdout := &bytes.Buffer{}
 
-	_, err := bootstrapIdentity(context.Background(), sender, templatesDir, stdin, stdout)
+	_, err := bootstrapIdentity(context.Background(), sender, templatesDir, scanner, stdout)
 	if err == nil {
 		t.Fatal("expected error for cancelled setup")
 	}
@@ -803,10 +804,10 @@ func TestCollectAndSetEnvVarsProvideValues(t *testing.T) {
 		},
 	}
 
-	stdin := strings.NewReader("test-secret-value\n")
+	scanner := bufio.NewScanner(strings.NewReader("test-secret-value\n"))
 	stdout := &bytes.Buffer{}
 
-	err := collectAndSetEnvVars(summary, stdin, stdout)
+	err := collectAndSetEnvVars(summary, scanner, stdout)
 	if err != nil {
 		t.Fatalf("collectAndSetEnvVars: %v", err)
 	}
@@ -840,10 +841,10 @@ func TestCollectAndSetEnvVarsSkip(t *testing.T) {
 	}
 
 	// Empty line = skip.
-	stdin := strings.NewReader("\n")
+	scanner := bufio.NewScanner(strings.NewReader("\n"))
 	stdout := &bytes.Buffer{}
 
-	err := collectAndSetEnvVars(summary, stdin, stdout)
+	err := collectAndSetEnvVars(summary, scanner, stdout)
 	if err != nil {
 		t.Fatalf("collectAndSetEnvVars: %v", err)
 	}
@@ -873,10 +874,10 @@ func TestCollectAndSetEnvVarsNoVars(t *testing.T) {
 		},
 	}
 
-	stdin := strings.NewReader("")
+	scanner := bufio.NewScanner(strings.NewReader(""))
 	stdout := &bytes.Buffer{}
 
-	err := collectAndSetEnvVars(summary, stdin, stdout)
+	err := collectAndSetEnvVars(summary, scanner, stdout)
 	if err != nil {
 		t.Fatalf("collectAndSetEnvVars: %v", err)
 	}

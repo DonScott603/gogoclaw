@@ -192,14 +192,18 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 		return fmt.Errorf("agent: bootstrap phase 1: %w", err)
 	}
 
+	// Single scanner shared across all interactive phases to avoid
+	// independent buffering that causes missed input on Windows.
+	scanner := bufio.NewScanner(stdin)
+
 	// Phase 2: identity — bootstrap.md lives at templates/bootstrap.md.
-	summary, err := bootstrapIdentity(ctx, sender, templatesDir, stdin, stdout)
+	summary, err := bootstrapIdentity(ctx, sender, templatesDir, scanner, stdout)
 	if err != nil {
 		return fmt.Errorf("agent: bootstrap phase 2: %w", err)
 	}
 
 	// Phase 3: collect and set environment variables directly (bypasses LLM).
-	if err := collectAndSetEnvVars(summary, stdin, stdout); err != nil {
+	if err := collectAndSetEnvVars(summary, scanner, stdout); err != nil {
 		return fmt.Errorf("agent: bootstrap env vars: %w", err)
 	}
 
@@ -216,7 +220,7 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 
 	// Pause so the user can read env var output before TUI takes over.
 	fmt.Fprintln(stdout, "\nBootstrap complete. Press Enter to launch GoGoClaw...")
-	bufio.NewScanner(stdin).Scan()
+	scanner.Scan()
 
 	return nil
 }
@@ -254,7 +258,7 @@ func bootstrapInfrastructure(configDir, templatesDir string) error {
 }
 
 // bootstrapIdentity runs the interactive Q&A through the engine.
-func bootstrapIdentity(ctx context.Context, sender Sender, templatesDir string, stdin io.Reader, stdout io.Writer) (*BootstrapSummary, error) {
+func bootstrapIdentity(ctx context.Context, sender Sender, templatesDir string, scanner *bufio.Scanner, stdout io.Writer) (*BootstrapSummary, error) {
 	tmpl, err := os.ReadFile(filepath.Join(templatesDir, "bootstrap.md"))
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap template: %w", err)
@@ -265,8 +269,6 @@ func bootstrapIdentity(ctx context.Context, sender Sender, templatesDir string, 
 	if err != nil {
 		return nil, fmt.Errorf("engine send: %w", err)
 	}
-
-	scanner := bufio.NewScanner(stdin)
 
 	// Interactive loop: show LLM response, get user input, repeat.
 	for {
@@ -520,7 +522,7 @@ func requiredEnvVars(s *BootstrapSummary) []envVarEntry {
 // collectAndSetEnvVars prompts the user for each required env var value and
 // sets it in the current process and persists it to the OS. Values are never
 // passed through the LLM engine, audit logger, or any persistence layer.
-func collectAndSetEnvVars(summary *BootstrapSummary, stdin io.Reader, stdout io.Writer) error {
+func collectAndSetEnvVars(summary *BootstrapSummary, scanner *bufio.Scanner, stdout io.Writer) error {
 	vars := requiredEnvVars(summary)
 	if len(vars) == 0 {
 		return nil
@@ -531,7 +533,6 @@ func collectAndSetEnvVars(summary *BootstrapSummary, stdin io.Reader, stdout io.
 	fmt.Fprintln(stdout, "Press Enter to skip any variable you want to set manually later.")
 	fmt.Fprintln(stdout)
 
-	scanner := bufio.NewScanner(stdin)
 	anySkipped := false
 
 	for _, v := range vars {
