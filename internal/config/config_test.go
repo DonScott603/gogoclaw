@@ -47,9 +47,13 @@ default_model: "gpt-4"
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	pc, ok := cfg.Providers["test-provider"]
+	pc, ok := cfg.Providers["test"]
 	if !ok {
-		t.Fatal("provider 'test-provider' not found in config")
+		t.Fatal("provider 'test' not found in config (keyed by filename)")
+	}
+	// Name field is preserved for display.
+	if pc.Name != "test-provider" {
+		t.Errorf("provider Name = %q, want %q (display name from YAML)", pc.Name, "test-provider")
 	}
 	if pc.BaseURL != "https://api.example.com/v1" {
 		t.Errorf("provider base_url = %q, want %q", pc.BaseURL, "https://api.example.com/v1")

@@ -70,6 +70,7 @@ func (l *Loader) loadCoreConfig(cfg *Config) error {
 }
 
 // loadProviders scans the providers/ directory.
+// Map key is always the filename (without .yaml); Name field is for display only.
 func (l *Loader) loadProviders(cfg *Config) error {
 	return l.loadDir("providers", func(path, defaultName string) error {
 		var pc ProviderConfig
@@ -79,12 +80,13 @@ func (l *Loader) loadProviders(cfg *Config) error {
 		if pc.Name == "" {
 			pc.Name = defaultName
 		}
-		cfg.Providers[pc.Name] = pc
+		cfg.Providers[defaultName] = pc
 		return nil
 	})
 }
 
 // loadAgents scans the agents/ directory.
+// Map key is always the filename (without .yaml); Name field is for display only.
 func (l *Loader) loadAgents(cfg *Config) error {
 	return l.loadDir("agents", func(path, defaultName string) error {
 		var ac AgentConfig
@@ -94,12 +96,13 @@ func (l *Loader) loadAgents(cfg *Config) error {
 		if ac.Name == "" {
 			ac.Name = defaultName
 		}
-		cfg.Agents[ac.Name] = ac
+		cfg.Agents[defaultName] = ac
 		return nil
 	})
 }
 
 // loadChannels scans the channels/ directory.
+// Map key is always the filename (without .yaml); Name field is for display only.
 func (l *Loader) loadChannels(cfg *Config) error {
 	return l.loadDir("channels", func(path, defaultName string) error {
 		var cc ChannelConfig
@@ -109,7 +112,7 @@ func (l *Loader) loadChannels(cfg *Config) error {
 		if cc.Name == "" {
 			cc.Name = defaultName
 		}
-		cfg.Channels[cc.Name] = cc
+		cfg.Channels[defaultName] = cc
 		return nil
 	})
 }
