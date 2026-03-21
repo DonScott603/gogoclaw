@@ -887,3 +887,180 @@ func TestCollectAndSetEnvVarsNoVars(t *testing.T) {
 		t.Errorf("expected empty stdout for no env vars, got: %s", stdout.String())
 	}
 }
+
+func TestAtomicWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+
+	// Write new file.
+	if err := atomicWriteFile(path, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("atomicWriteFile (new): %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "hello\n" {
+		t.Errorf("content = %q, want %q", string(data), "hello\n")
+	}
+
+	// Overwrite existing file.
+	if err := atomicWriteFile(path, []byte("world\n"), 0644); err != nil {
+		t.Fatalf("atomicWriteFile (overwrite): %v", err)
+	}
+	data, _ = os.ReadFile(path)
+	if string(data) != "world\n" {
+		t.Errorf("overwrite content = %q, want %q", string(data), "world\n")
+	}
+}
+
+func TestWriteIdentityYAML(t *testing.T) {
+	configDir := t.TempDir()
+	os.MkdirAll(filepath.Join(configDir, "agents"), 0755)
+
+	summary := &BootstrapSummary{
+		UserName:    "Scott",
+		AgentName:   "Jim",
+		Personality: "casual",
+		WorkDomain:  "financial services",
+		PIIMode:     "permissive",
+	}
+
+	err := writeIdentityYAML(configDir, summary)
+	if err != nil {
+		t.Fatalf("writeIdentityYAML: %v", err)
+	}
+
+	id, err := LoadIdentity(configDir)
+	if err != nil {
+		t.Fatalf("LoadIdentity: %v", err)
+	}
+	if id == nil {
+		t.Fatal("LoadIdentity returned nil")
+	}
+	if id.UserName != "Scott" {
+		t.Errorf("UserName = %q, want Scott", id.UserName)
+	}
+	if id.AgentName != "Jim" {
+		t.Errorf("AgentName = %q, want Jim", id.AgentName)
+	}
+	if id.Personality != "casual" {
+		t.Errorf("Personality = %q, want casual", id.Personality)
+	}
+	if id.BootstrapVersion != 1 {
+		t.Errorf("BootstrapVersion = %d, want 1", id.BootstrapVersion)
+	}
+	if id.BootstrappedAt == "" {
+		t.Error("BootstrappedAt should not be empty")
+	}
+}
+
+func TestLoadIdentityMissing(t *testing.T) {
+	dir := t.TempDir()
+	id, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != nil {
+		t.Errorf("expected nil for missing identity.yaml, got %+v", id)
+	}
+}
+
+func TestWriteBootstrapResultsIdentityYAML(t *testing.T) {
+	configDir := t.TempDir()
+	os.MkdirAll(filepath.Join(configDir, "agents"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "providers"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "channels"), 0755)
+
+	summary := &BootstrapSummary{
+		UserName:     "Alice",
+		AgentName:    "Atlas",
+		Personality:  "concise",
+		WorkDomain:   "engineering",
+		PIIMode:      "warn",
+		ProviderType: "ollama",
+		RESTEnabled:  true,
+		RESTPort:     8080,
+	}
+	summary.applyDefaults()
+
+	err := writeBootstrapResults(configDir, summary)
+	if err != nil {
+		t.Fatalf("writeBootstrapResults: %v", err)
+	}
+
+	// identity.yaml should exist alongside user.md.
+	id, err := LoadIdentity(configDir)
+	if err != nil {
+		t.Fatalf("LoadIdentity: %v", err)
+	}
+	if id == nil {
+		t.Fatal("identity.yaml not created")
+	}
+	if id.UserName != "Alice" {
+		t.Errorf("identity UserName = %q", id.UserName)
+	}
+	if id.AgentName != "Atlas" {
+		t.Errorf("identity AgentName = %q", id.AgentName)
+	}
+}
+
+func TestLoadEnvFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an env file.
+	envContent := "TEST_LOAD_A=hello\nTEST_LOAD_B=world\n"
+	os.WriteFile(filepath.Join(dir, "env"), []byte(envContent), 0600)
+
+	defer os.Unsetenv("TEST_LOAD_A")
+	defer os.Unsetenv("TEST_LOAD_B")
+
+	LoadEnvFile(dir)
+
+	if got := os.Getenv("TEST_LOAD_A"); got != "hello" {
+		t.Errorf("TEST_LOAD_A = %q, want hello", got)
+	}
+	if got := os.Getenv("TEST_LOAD_B"); got != "world" {
+		t.Errorf("TEST_LOAD_B = %q, want world", got)
+	}
+}
+
+func TestLoadEnvFileMissing(t *testing.T) {
+	// Should not panic or error when file doesn't exist.
+	LoadEnvFile(t.TempDir())
+}
+
+func TestBootstrapDirsIncludesMCP(t *testing.T) {
+	found := false
+	for _, d := range bootstrapDirs {
+		if d == "mcp" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("bootstrapDirs should include 'mcp'")
+	}
+}
+
+func TestRelevanceThreshold(t *testing.T) {
+	configDir := t.TempDir()
+	os.MkdirAll(filepath.Join(configDir, "agents"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "providers"), 0755)
+	os.MkdirAll(filepath.Join(configDir, "channels"), 0755)
+
+	summary := &BootstrapSummary{
+		UserName:     "X",
+		ProviderType: "ollama",
+		RESTEnabled:  true,
+		RESTPort:     8080,
+	}
+	summary.applyDefaults()
+
+	writeBootstrapResults(configDir, summary)
+
+	data, _ := os.ReadFile(filepath.Join(configDir, "agents", "base.yaml"))
+	if !strings.Contains(string(data), "relevance_threshold: 0.3") {
+		t.Errorf("base.yaml should have relevance_threshold 0.3, got:\n%s", string(data))
+	}
+}

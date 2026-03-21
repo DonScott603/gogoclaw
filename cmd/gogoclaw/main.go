@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -29,6 +30,9 @@ func main() {
 		log.Fatalf("cannot determine home directory: %v", err)
 	}
 	configDir := filepath.Join(home, ".gogoclaw")
+
+	// Load env file before config so ${ENV_VAR} references resolve.
+	agent.LoadEnvFile(configDir)
 
 	// Load config.
 	cfg, err := config.NewLoader(configDir).Load()
@@ -74,18 +78,30 @@ func main() {
 			context.Background(), engDeps.Engine, configDir,
 			templatesDir, os.Stdin, os.Stdout,
 		); err != nil {
+			if errors.Is(err, agent.ErrSetupCancelled) {
+				fmt.Println("Setup cancelled. Run GoGoClaw again when ready.")
+				os.Exit(0)
+			}
 			log.Printf("bootstrap: %v (continuing with defaults)", err)
 		} else {
 			// Reload config to pick up any changes bootstrap wrote.
 			cfg, err = config.NewLoader(configDir).Load()
 			if err != nil {
 				log.Printf("config reload after bootstrap: %v", err)
+			} else {
+				// Full runtime re-init with the new config.
+				memDeps.Close()
+				engDeps.Monitor.Stop()
+
+				newSecDeps, err := app.InitSecurity(cfg, auditDeps)
+				if err != nil {
+					log.Fatalf("security re-init after bootstrap: %v", err)
+				}
+				secDeps = newSecDeps
+
+				memDeps = app.InitMemory(cfg, configDir, secDeps.ActiveProvider)
+				engDeps = app.InitEngine(cfg, configDir, secDeps, storeDeps, memDeps, skillDeps, auditDeps, confirmFn)
 			}
-			// Reinitialize system prompt with post-bootstrap config.
-			newPrompt := app.LoadSystemPrompt(configDir, cfg)
-			newPrompt = app.ResolvePromptVars(configDir, cfg, newPrompt)
-			engDeps.Engine.SetSystemPrompt(newPrompt)
-			os.WriteFile(filepath.Join(configDir, "debug_prompt.txt"), []byte(newPrompt), 0644)
 		}
 	}
 

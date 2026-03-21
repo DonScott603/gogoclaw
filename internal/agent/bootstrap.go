@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/DonScott603/gogoclaw/internal/config"
+	"golang.org/x/term"
 )
 
 // ProviderSummary holds configuration for a single LLM provider.
@@ -158,6 +161,7 @@ var bootstrapDirs = []string{
 	"agents",
 	"providers",
 	"channels",
+	"mcp",
 }
 
 // templateFiles maps source paths (relative to the config templates dir) to
@@ -212,9 +216,14 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 		return fmt.Errorf("agent: bootstrap write results: %w", err)
 	}
 
+	// Validate the generated config before committing.
+	if err := validateBootstrapConfig(configDir, summary, stdout); err != nil {
+		return err
+	}
+
 	// Create initialized marker.
 	marker := filepath.Join(configDir, "initialized")
-	if err := os.WriteFile(marker, []byte("ok\n"), 0644); err != nil {
+	if err := atomicWriteFile(marker, []byte("ok\n"), 0644); err != nil {
 		return fmt.Errorf("agent: create marker: %w", err)
 	}
 
@@ -334,6 +343,9 @@ func writeBootstrapResults(configDir string, summary *BootstrapSummary) error {
 	if err := writeUserMD(configDir, summary); err != nil {
 		return err
 	}
+	if err := writeIdentityYAML(configDir, summary); err != nil {
+		return err
+	}
 	if err := writeProviderYAMLs(configDir, summary); err != nil {
 		return err
 	}
@@ -356,7 +368,7 @@ func writeUserMD(configDir string, s *BootstrapSummary) error {
 	content := fmt.Sprintf("# User Profile\n\nName: %s\nPersonality: %s\nWork Domain: %s\nPII Mode: %s\n",
 		s.UserName, s.Personality, s.WorkDomain, s.PIIMode)
 	path := filepath.Join(configDir, "agents", "user.md")
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicWriteFile(path, []byte(content), 0644)
 }
 
 // writeProviderYAMLs writes a separate YAML file for each provider.
@@ -376,7 +388,7 @@ func writeProviderYAMLs(configDir string, s *BootstrapSummary) error {
 			p.Name, providerType, p.BaseURL, apiKeyLine, p.Model)
 
 		path := filepath.Join(configDir, "providers", p.Name+".yaml")
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := atomicWriteFile(path, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write provider %s: %w", p.Name, err)
 		}
 	}
@@ -416,7 +428,7 @@ context:
 memory:
   enabled: true
   top_k: 10
-  relevance_threshold: 0.7
+  relevance_threshold: 0.3
   recency_weight: 0.2
 
 shell:
@@ -424,7 +436,7 @@ shell:
 `, s.AgentName, providerChain, s.PIIMode)
 
 	path := filepath.Join(configDir, "agents", "base.yaml")
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicWriteFile(path, []byte(content), 0644)
 }
 
 func writeRESTChannelYAML(configDir string, s *BootstrapSummary) error {
@@ -436,7 +448,7 @@ func writeRESTChannelYAML(configDir string, s *BootstrapSummary) error {
 		s.RESTEnabled, s.RESTPort, keyEnv)
 
 	path := filepath.Join(configDir, "channels", "rest.yaml")
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicWriteFile(path, []byte(content), 0644)
 }
 
 func writeTelegramChannelYAML(configDir string, s *BootstrapSummary) error {
@@ -449,7 +461,7 @@ func writeTelegramChannelYAML(configDir string, s *BootstrapSummary) error {
 		s.TelegramEnabled, tokenEnv)
 
 	path := filepath.Join(configDir, "channels", "telegram.yaml")
-	return os.WriteFile(path, []byte(content), 0644)
+	return atomicWriteFile(path, []byte(content), 0644)
 }
 
 func writeNetworkYAML(configDir string, s *BootstrapSummary) error {
@@ -474,7 +486,7 @@ func writeNetworkYAML(configDir string, s *BootstrapSummary) error {
 	lines = append(lines, "")
 
 	path := filepath.Join(configDir, "network.yaml")
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+	return atomicWriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 // containsStr checks if a string slice contains a value.
@@ -522,11 +534,14 @@ func requiredEnvVars(s *BootstrapSummary) []envVarEntry {
 // collectAndSetEnvVars prompts the user for each required env var value and
 // sets it in the current process and persists it to the OS. Values are never
 // passed through the LLM engine, audit logger, or any persistence layer.
+// When stdin is a terminal, secret values are read without echoing.
 func collectAndSetEnvVars(summary *BootstrapSummary, scanner *bufio.Scanner, stdout io.Writer) error {
 	vars := requiredEnvVars(summary)
 	if len(vars) == 0 {
 		return nil
 	}
+
+	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
 
 	fmt.Fprintln(stdout, "\n--- Environment Variable Setup ---")
 	fmt.Fprintln(stdout, "Enter values for the required environment variables below.")
@@ -537,10 +552,21 @@ func collectAndSetEnvVars(summary *BootstrapSummary, scanner *bufio.Scanner, std
 
 	for _, v := range vars {
 		fmt.Fprintf(stdout, "Enter your %s (%s) (or press Enter to skip): ", v.Purpose, v.Name)
-		if !scanner.Scan() {
-			return fmt.Errorf("unexpected end of input")
+
+		var value string
+		if isTTY {
+			raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(stdout) // ReadPassword doesn't print newline
+			if err != nil {
+				return fmt.Errorf("read password for %s: %w", v.Name, err)
+			}
+			value = strings.TrimSpace(string(raw))
+		} else {
+			if !scanner.Scan() {
+				return fmt.Errorf("unexpected end of input")
+			}
+			value = strings.TrimSpace(scanner.Text())
 		}
-		value := strings.TrimSpace(scanner.Text())
 
 		if value == "" {
 			fmt.Fprintf(stdout, "  Skipped %s. You will need to set it manually before restarting.\n", v.Name)
@@ -570,33 +596,138 @@ func collectAndSetEnvVars(summary *BootstrapSummary, scanner *bufio.Scanner, std
 	return nil
 }
 
-// persistEnvVar saves an environment variable to the OS so it survives restarts.
-// On Windows it uses setx; on macOS it appends to ~/.zshrc; on Linux to ~/.bashrc.
+// persistEnvVar saves an environment variable to ~/.gogoclaw/env (KEY=value
+// format, one per line, permissions 0600). On Windows, also calls setx for
+// system-wide persistence.
 func persistEnvVar(name, value string) error {
-	switch runtime.GOOS {
-	case "windows":
-		return exec.Command("cmd", "/C", "setx", name, value).Run()
-	default:
-		rcFile := ".bashrc"
-		if runtime.GOOS == "darwin" {
-			rcFile = ".zshrc"
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("home dir: %w", err)
-		}
-		rcPath := filepath.Join(home, rcFile)
-		f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", rcFile, err)
-		}
-		defer f.Close()
-		line := fmt.Sprintf("\nexport %s=%q\n", name, value)
-		if _, err := f.WriteString(line); err != nil {
-			return fmt.Errorf("write %s: %w", rcFile, err)
-		}
-		return nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
 	}
+	envPath := filepath.Join(home, ".gogoclaw", "env")
+
+	// Read existing lines, replace if key already exists.
+	var lines []string
+	if data, err := os.ReadFile(envPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if eqIdx := strings.IndexByte(line, '='); eqIdx > 0 {
+				if line[:eqIdx] == name {
+					continue // skip old value, we'll append new one
+				}
+			}
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, fmt.Sprintf("%s=%s", name, value))
+	content := strings.Join(lines, "\n") + "\n"
+
+	if err := atomicWriteFile(envPath, []byte(content), 0600); err != nil {
+		return fmt.Errorf("write env file: %w", err)
+	}
+
+	// On Windows, also persist via setx for system-wide availability.
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("cmd", "/C", "setx", name, value).Run()
+	}
+	return nil
+}
+
+// LoadEnvFile reads ~/.gogoclaw/env (KEY=value lines) and sets each as an
+// environment variable via os.Setenv. Call this at process start before
+// config loading.
+func LoadEnvFile(configDir string) {
+	envPath := filepath.Join(configDir, "env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return // file doesn't exist yet, that's fine
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eqIdx := strings.IndexByte(line, '=')
+		if eqIdx <= 0 {
+			continue
+		}
+		key := line[:eqIdx]
+		val := line[eqIdx+1:]
+		os.Setenv(key, val)
+	}
+}
+
+// validateBootstrapConfig reloads the generated config and checks that it has
+// at least one provider, base.yaml has system_prompt_file set, and enabled
+// channels have their required env vars present.
+func validateBootstrapConfig(configDir string, summary *BootstrapSummary, stdout io.Writer) error {
+	cfg, err := config.NewLoader(configDir).Load()
+	if err != nil {
+		fmt.Fprintf(stdout, "Bootstrap validation failed: %v\n", err)
+		fmt.Fprintln(stdout, "Config files were written but may have issues. Fix them and re-run GoGoClaw.")
+		return fmt.Errorf("agent: bootstrap validation: %w", err)
+	}
+	if len(cfg.Providers) == 0 {
+		msg := "no providers configured after bootstrap"
+		fmt.Fprintf(stdout, "Bootstrap validation failed: %s\n", msg)
+		return fmt.Errorf("agent: bootstrap validation: %s", msg)
+	}
+	if ac, ok := cfg.Agents["base"]; !ok || ac.SystemPromptFile == "" {
+		msg := "base agent missing system_prompt_file"
+		fmt.Fprintf(stdout, "Bootstrap validation failed: %s\n", msg)
+		return fmt.Errorf("agent: bootstrap validation: %s", msg)
+	}
+	if cc, ok := cfg.Channels["telegram"]; ok && cc.Enabled {
+		tokenEnv := cc.TokenEnv
+		if tokenEnv != "" && os.Getenv(tokenEnv) == "" {
+			fmt.Fprintf(stdout, "Warning: Telegram enabled but %s is not set.\n", tokenEnv)
+		}
+	}
+	if cc, ok := cfg.Channels["rest"]; ok && cc.Enabled {
+		keyEnv := cc.APIKeyEnv
+		if keyEnv != "" && os.Getenv(keyEnv) == "" {
+			fmt.Fprintf(stdout, "Warning: REST API enabled but %s is not set.\n", keyEnv)
+		}
+	}
+	return nil
+}
+
+// atomicWriteFile writes data to path atomically by writing to a temp file
+// first, then renaming. On Windows, removes destination before rename.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+
+	// On Windows, os.Rename fails if destination exists.
+	if runtime.GOOS == "windows" {
+		os.Remove(path)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rename %s -> %s: %w", tmpName, path, err)
+	}
+	return nil
 }
 
 // extractDomain returns the hostname from a URL string.

@@ -41,8 +41,6 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 
 	systemPrompt := LoadSystemPrompt(configDir, cfg)
 	systemPrompt = ResolvePromptVars(configDir, cfg, systemPrompt)
-	os.WriteFile(filepath.Join(configDir, "debug_prompt.txt"), []byte(systemPrompt), 0644)
-	log.Printf("DEBUG system prompt (first 200): %.200s", systemPrompt)
 
 	maxCtx := 8192
 	if agent, ok := cfg.Agents["base"]; ok && agent.Context.MaxHistoryTokens > 0 {
@@ -77,20 +75,35 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 }
 
 // ResolvePromptVars applies template variable resolution to the system prompt.
+// Reads identity.yaml for user_name and agent_name; falls back to user.md
+// and agent config if identity.yaml is not present (backward compatibility).
 func ResolvePromptVars(configDir string, cfg *config.Config, prompt string) string {
 	vars := make(map[string]string)
 
-	if ac, ok := cfg.Agents["base"]; ok && ac.Name != "" {
-		vars["agent_name"] = ac.Name
+	// Try structured identity file first.
+	if id, err := agent.LoadIdentity(configDir); err == nil && id != nil {
+		if id.AgentName != "" {
+			vars["agent_name"] = id.AgentName
+		}
+		if id.UserName != "" {
+			vars["user_name"] = id.UserName
+		}
 	}
 
-	// Read user name from user.md if it exists.
-	userPath := filepath.Join(configDir, "agents", "user.md")
-	if data, err := os.ReadFile(userPath); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "Name: ") {
-				vars["user_name"] = strings.TrimPrefix(line, "Name: ")
-				break
+	// Fall back to config/user.md for any missing vars.
+	if _, ok := vars["agent_name"]; !ok {
+		if ac, ok := cfg.Agents["base"]; ok && ac.Name != "" {
+			vars["agent_name"] = ac.Name
+		}
+	}
+	if _, ok := vars["user_name"]; !ok {
+		userPath := filepath.Join(configDir, "agents", "user.md")
+		if data, err := os.ReadFile(userPath); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "Name: ") {
+					vars["user_name"] = strings.TrimPrefix(line, "Name: ")
+					break
+				}
 			}
 		}
 	}
