@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -546,6 +547,9 @@ func collectAndSetEnvVars(summary *BootstrapSummary, scanner *bufio.Scanner, std
 	fmt.Fprintln(stdout, "\n--- Environment Variable Setup ---")
 	fmt.Fprintln(stdout, "Enter values for the required environment variables below.")
 	fmt.Fprintln(stdout, "Press Enter to skip any variable you want to set manually later.")
+	if isTTY {
+		fmt.Fprintln(stdout, "Your input is hidden for security — type your key and press Enter.")
+	}
 	fmt.Fprintln(stdout)
 
 	anySkipped := false
@@ -656,6 +660,10 @@ func LoadEnvFile(configDir string) {
 		}
 		key := line[:eqIdx]
 		val := line[eqIdx+1:]
+		if os.Getenv(key) != "" {
+			log.Printf("env: %s already set in environment, skipping env file value", key)
+			continue
+		}
 		os.Setenv(key, val)
 	}
 }

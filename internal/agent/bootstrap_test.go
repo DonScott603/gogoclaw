@@ -1025,6 +1025,23 @@ func TestLoadEnvFile(t *testing.T) {
 	}
 }
 
+func TestLoadEnvFileSkipsExisting(t *testing.T) {
+	dir := t.TempDir()
+
+	envContent := "TEST_LOAD_SKIP=from_file\n"
+	os.WriteFile(filepath.Join(dir, "env"), []byte(envContent), 0600)
+
+	// Pre-set the variable — LoadEnvFile should NOT overwrite it.
+	os.Setenv("TEST_LOAD_SKIP", "from_env")
+	defer os.Unsetenv("TEST_LOAD_SKIP")
+
+	LoadEnvFile(dir)
+
+	if got := os.Getenv("TEST_LOAD_SKIP"); got != "from_env" {
+		t.Errorf("TEST_LOAD_SKIP = %q, want %q (env file should not override)", got, "from_env")
+	}
+}
+
 func TestLoadEnvFileMissing(t *testing.T) {
 	// Should not panic or error when file doesn't exist.
 	LoadEnvFile(t.TempDir())

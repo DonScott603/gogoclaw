@@ -30,6 +30,7 @@ GoGoClaw is a security-first AI agent framework in Go. Single binary, no CGo.
 - All outbound HTTP must go through the network allowlist.
 - PII gate runs before every LLM request (when enabled).
 - Skill permissions are enforced by the capability broker, never by the skill itself.
+- os.Chmod(0600) is effectively a no-op on Windows — Go can only toggle the read-only attribute, not POSIX user/group/other permissions. Sensitive files like ~/.gogoclaw/env rely on the user home directory's inherited NTFS ACLs for protection, which restrict access to the owning user, Administrators, and SYSTEM by default. This is acceptable for a local single-user tool.
 
 ## Directory Map
 - cmd/gogoclaw/ — entry point
