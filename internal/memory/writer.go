@@ -70,7 +70,7 @@ func (w *Writer) appendDailyFile(now time.Time, conversationID string, facts []s
 		b.WriteString(fmt.Sprintf("- %s\n", fact))
 	}
 
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

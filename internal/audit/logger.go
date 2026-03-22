@@ -65,7 +65,7 @@ func NewLogger(cfg LoggerConfig) (*Logger, error) {
 		return nil, fmt.Errorf("audit: create dir: %w", err)
 	}
 
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audit: open log: %w", err)
 	}

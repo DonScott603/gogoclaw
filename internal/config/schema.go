@@ -46,7 +46,7 @@ type StorageConfig struct {
 // ConversationStorageConfig defines SQLite storage parameters.
 type ConversationStorageConfig struct {
 	Path          string `yaml:"path" json:"path"`
-	Encrypt       bool   `yaml:"encrypt" json:"encrypt"`
+	Encrypt       bool   `yaml:"encrypt" json:"encrypt"`       // TODO: Not yet implemented. Reserved for future use.
 	PassphraseEnv string `yaml:"passphrase_env" json:"passphrase_env"`
 }
 

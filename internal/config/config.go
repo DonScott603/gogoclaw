@@ -193,7 +193,7 @@ func DefaultConfig() *Config {
 		Storage: StorageConfig{
 			Conversations: ConversationStorageConfig{
 				Path:    "~/.gogoclaw/data/conversations.db",
-				Encrypt: true,
+				Encrypt: false,
 			},
 		},
 		Providers: make(map[string]ProviderConfig),
@@ -225,5 +225,15 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("config: validate: provider %q missing type", name)
 		}
 	}
+
+	if agent, ok := cfg.Agents["base"]; ok && agent.ProviderRouting.Mode != "" {
+		switch agent.ProviderRouting.Mode {
+		case "cloud-only", "local-only", "hybrid", "tiered":
+			// valid
+		default:
+			return fmt.Errorf("config: validate: unrecognized provider routing mode %q (valid: cloud-only, local-only, hybrid, tiered)", agent.ProviderRouting.Mode)
+		}
+	}
+
 	return nil
 }

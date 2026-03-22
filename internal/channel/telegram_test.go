@@ -151,9 +151,9 @@ func TestTelegramAccessControlEmptyList(t *testing.T) {
 		allowedUsers: map[string]bool{},
 	}
 
-	// Empty list = allow all.
-	if !tc.isUserAllowed("anyone", "999") {
-		t.Error("empty allowedUsers should allow all")
+	// Empty list = deny all (fail closed).
+	if tc.isUserAllowed("anyone", "999") {
+		t.Error("empty allowedUsers should deny all (fail closed)")
 	}
 }
 

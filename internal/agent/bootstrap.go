@@ -150,19 +150,26 @@ type Sender interface {
 	Send(ctx context.Context, text string) (string, error)
 }
 
+// bootstrapDir pairs a relative path with its permission mode.
+type bootstrapDir struct {
+	Path string
+	Perm os.FileMode
+}
+
 // bootstrapDirs are the directories created during Phase 1.
-var bootstrapDirs = []string{
-	"workspace/inbox",
-	"workspace/outbox",
-	"workspace/scratch",
-	"workspace/documents",
-	"memory/daily",
-	"audit",
-	"skills.d",
-	"agents",
-	"providers",
-	"channels",
-	"mcp",
+// Directories that may contain sensitive data use 0700.
+var bootstrapDirs = []bootstrapDir{
+	{"workspace/inbox", 0755},
+	{"workspace/outbox", 0755},
+	{"workspace/scratch", 0755},
+	{"workspace/documents", 0755},
+	{"memory/daily", 0700},
+	{"audit", 0700},
+	{"skills.d", 0755},
+	{"agents", 0700},
+	{"providers", 0755},
+	{"channels", 0755},
+	{"mcp", 0755},
 }
 
 // templateFiles maps source paths (relative to the config templates dir) to
@@ -217,6 +224,10 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 		return fmt.Errorf("agent: bootstrap write results: %w", err)
 	}
 
+	if summary.TelegramEnabled {
+		fmt.Fprintln(stdout, "Note: Add your Telegram username or user ID to ~/.gogoclaw/channels/telegram.yaml allowed_users before the bot will respond.")
+	}
+
 	// Validate the generated config before committing.
 	if err := validateBootstrapConfig(configDir, summary, stdout); err != nil {
 		return err
@@ -238,9 +249,9 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 // bootstrapInfrastructure creates directories and copies default templates.
 func bootstrapInfrastructure(configDir, templatesDir string) error {
 	for _, dir := range bootstrapDirs {
-		path := filepath.Join(configDir, dir)
-		if err := os.MkdirAll(path, 0755); err != nil {
-			return fmt.Errorf("create dir %s: %w", dir, err)
+		path := filepath.Join(configDir, dir.Path)
+		if err := os.MkdirAll(path, dir.Perm); err != nil {
+			return fmt.Errorf("create dir %s: %w", dir.Path, err)
 		}
 	}
 
@@ -389,7 +400,7 @@ func writeProviderYAMLs(configDir string, s *BootstrapSummary) error {
 			p.Name, providerType, p.BaseURL, apiKeyLine, p.Model)
 
 		path := filepath.Join(configDir, "providers", p.Name+".yaml")
-		if err := atomicWriteFile(path, []byte(content), 0644); err != nil {
+		if err := atomicWriteFile(path, []byte(content), 0600); err != nil {
 			return fmt.Errorf("write provider %s: %w", p.Name, err)
 		}
 	}
@@ -458,7 +469,7 @@ func writeTelegramChannelYAML(configDir string, s *BootstrapSummary) error {
 		tokenEnv = "GOGOCLAW_TELEGRAM_TOKEN"
 	}
 
-	content := fmt.Sprintf("name: \"telegram\"\nenabled: %t\ntoken_env: %q\nallowed_users: []\npolling_timeout: 10s\n",
+	content := fmt.Sprintf("name: \"telegram\"\nenabled: %t\ntoken_env: %q\n# The bot will not respond until at least one username or user ID is added below.\nallowed_users: []\npolling_timeout: 10s\n",
 		s.TelegramEnabled, tokenEnv)
 
 	path := filepath.Join(configDir, "channels", "telegram.yaml")

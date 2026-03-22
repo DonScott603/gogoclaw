@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DonScott603/gogoclaw/internal/audit"
@@ -73,7 +74,7 @@ func newTestREST(t *testing.T, opts ...func(*config.ChannelConfig)) *RESTChannel
 		fn(&chanCfg)
 	}
 
-	return NewREST(RESTConfig{
+	rc, err := NewREST(RESTConfig{
 		Channel:     chanCfg,
 		Engine:      eng,
 		Store:       store,
@@ -81,6 +82,10 @@ func newTestREST(t *testing.T, opts ...func(*config.ChannelConfig)) *RESTChannel
 		AuditLogger: logger,
 		InboxDir:    inboxDir,
 	})
+	if err != nil {
+		t.Fatalf("NewREST: %v", err)
+	}
+	return rc
 }
 
 func handler(rc *RESTChannel) http.Handler {
@@ -336,11 +341,14 @@ func TestRESTFileUpload(t *testing.T) {
 
 	var resp messageResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if len(resp.Files) != 1 || resp.Files[0] != "test.txt" {
-		t.Errorf("files = %v, want [test.txt]", resp.Files)
+	if len(resp.Files) != 1 {
+		t.Fatalf("files count = %d, want 1", len(resp.Files))
+	}
+	if !strings.HasSuffix(resp.Files[0], "_test.txt") {
+		t.Errorf("file = %q, want suffix _test.txt (collision-safe name)", resp.Files[0])
 	}
 
-	data, err := os.ReadFile(filepath.Join(rc.inboxDir, "test.txt"))
+	data, err := os.ReadFile(filepath.Join(rc.inboxDir, resp.Files[0]))
 	if err != nil {
 		t.Fatalf("read uploaded file: %v", err)
 	}
@@ -406,13 +414,16 @@ func TestRESTAuditLogging(t *testing.T) {
 	})
 	mon := health.NewMonitor(health.MonitorConfig{PIIMode: "disabled"})
 
-	rc := NewREST(RESTConfig{
+	rc, err := NewREST(RESTConfig{
 		Channel:     config.ChannelConfig{Name: "rest", Enabled: true, APIKey: "key"},
 		Engine:      eng,
 		Monitor:     mon,
 		AuditLogger: logger,
 		InboxDir:    t.TempDir(),
 	})
+	if err != nil {
+		t.Fatalf("NewREST: %v", err)
+	}
 
 	body, _ := json.Marshal(messageRequest{Text: "hi"})
 	req := httptest.NewRequest(http.MethodPost, "/api/message", bytes.NewReader(body))

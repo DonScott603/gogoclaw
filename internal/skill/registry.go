@@ -25,6 +25,13 @@ type Registry struct {
 	skills  map[string]*SkillEntry
 }
 
+// NewEmptyRegistry returns a registry with no skills and no scan.
+func NewEmptyRegistry() *Registry {
+	return &Registry{
+		skills: make(map[string]*SkillEntry),
+	}
+}
+
 // NewRegistry creates a registry that scans skillsDir for installed skills.
 // Each subdirectory should contain a manifest.yaml and a .wasm file.
 func NewRegistry(skillsDir string) (*Registry, error) {

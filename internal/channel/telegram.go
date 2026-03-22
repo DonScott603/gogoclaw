@@ -274,10 +274,10 @@ func (tc *TelegramChannel) checkAccess(c tele.Context) bool {
 	return true
 }
 
-// isUserAllowed returns true if the user is permitted. Empty list allows all.
+// isUserAllowed returns true if the user is permitted. Empty list denies all (fail closed).
 func (tc *TelegramChannel) isUserAllowed(username, userID string) bool {
 	if len(tc.allowedUsers) == 0 {
-		return true
+		return false // fail closed: no allowlist = no access
 	}
 	return tc.allowedUsers[username] || tc.allowedUsers[userID]
 }
@@ -331,10 +331,11 @@ func (tc *TelegramChannel) downloadFile(file *tele.File, filename string) error 
 	}
 	defer reader.Close()
 
-	name := filepath.Base(filename)
-	if name == "." || name == "/" {
-		name = "upload"
+	base := filepath.Base(filename)
+	if base == "." || base == "/" {
+		base = "upload"
 	}
+	name := fmt.Sprintf("%d_%s", time.Now().UnixNano(), base)
 
 	destPath := filepath.Join(tc.inboxDir, name)
 	dst, err := os.Create(destPath)

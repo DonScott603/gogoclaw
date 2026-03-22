@@ -168,6 +168,20 @@ func TestDetectAPIKey(t *testing.T) {
 	}
 }
 
+func TestDetectGitHubToken(t *testing.T) {
+	c := NewClassifier()
+	detections := c.Detect("Token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")
+	found := false
+	for _, d := range detections {
+		if d.Type == PatternAPIKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected GitHub token detection, got %v", detections)
+	}
+}
+
 func TestDetectBearerToken(t *testing.T) {
 	c := NewClassifier()
 	detections := c.Detect("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")

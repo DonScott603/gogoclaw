@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -51,8 +52,11 @@ type RESTConfig struct {
 }
 
 // NewREST creates a new REST API channel.
-func NewREST(cfg RESTConfig) *RESTChannel {
-	apiKey := resolveAPIKey(cfg.Channel)
+func NewREST(cfg RESTConfig) (*RESTChannel, error) {
+	apiKey, err := resolveAPIKey(cfg.Channel)
+	if err != nil {
+		return nil, fmt.Errorf("channel: rest: %w", err)
+	}
 
 	listen := cfg.Channel.Listen
 	if listen == "" {
@@ -85,7 +89,7 @@ func NewREST(cfg RESTConfig) *RESTChannel {
 		Handler: rc.corsMiddleware(rc.authMiddleware(rc.auditMiddleware(mux))),
 	}
 
-	return rc
+	return rc, nil
 }
 
 // APIKey returns the resolved (or auto-generated) API key.
@@ -127,23 +131,23 @@ func (rc *RESTChannel) OnMessage(handler func(ctx context.Context, msg types.Inb
 }
 
 // resolveAPIKey determines the API key from config, env var, or auto-generates one.
-func resolveAPIKey(cfg config.ChannelConfig) string {
+func resolveAPIKey(cfg config.ChannelConfig) (string, error) {
 	// Literal key in config takes priority.
 	if cfg.APIKey != "" {
-		return cfg.APIKey
+		return cfg.APIKey, nil
 	}
 	// Env var is second priority.
 	if cfg.APIKeyEnv != "" {
 		if key := os.Getenv(cfg.APIKeyEnv); key != "" {
-			return key
+			return key, nil
 		}
 	}
 	// Auto-generate a random key.
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
-		return "gogoclaw-fallback-key"
+		return "", fmt.Errorf("generate API key: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // --- middleware ---
@@ -172,7 +176,7 @@ func (rc *RESTChannel) authMiddleware(next http.Handler) http.Handler {
 		if rc.apiKey != "" {
 			auth := r.Header.Get("Authorization")
 			expected := "Bearer " + rc.apiKey
-			if auth != expected {
+			if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 				return
 			}
@@ -250,6 +254,10 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		if rc.inboxDir != "" && r.MultipartForm != nil {
 			for _, headers := range r.MultipartForm.File {
 				for _, fh := range headers {
+					if fh.Size > 32<<20 {
+						writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{Error: fmt.Sprintf("channel: rest: file %q exceeds 32 MB limit", fh.Filename)})
+						return
+					}
 					saved, err := rc.saveUpload(fh)
 					if err != nil {
 						writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: save upload: " + err.Error()})
@@ -260,6 +268,7 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit for JSON
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "channel: rest: invalid JSON: " + err.Error()})
 			return
@@ -318,10 +327,11 @@ func (rc *RESTChannel) saveUpload(fh *multipart.FileHeader) (string, error) {
 	}
 	defer src.Close()
 
-	name := filepath.Base(fh.Filename)
-	if name == "." || name == "/" {
-		name = "upload"
+	base := filepath.Base(fh.Filename)
+	if base == "." || base == "/" {
+		base = "upload"
 	}
+	name := fmt.Sprintf("%d_%s", time.Now().UnixNano(), base)
 
 	destPath := filepath.Join(rc.inboxDir, name)
 	dst, err := os.Create(destPath)

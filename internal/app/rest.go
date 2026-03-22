@@ -14,8 +14,11 @@ type RESTDeps struct {
 
 // InitREST creates and starts the REST channel if enabled in config.
 // Returns nil RESTDeps if the channel is not configured or not enabled.
-func InitREST(engDeps EngineDeps, storeDeps StorageDeps, auditDeps AuditDeps, restCfg channel.RESTConfig) *RESTDeps {
-	rc := channel.NewREST(restCfg)
+func InitREST(engDeps EngineDeps, storeDeps StorageDeps, auditDeps AuditDeps, restCfg channel.RESTConfig) (*RESTDeps, error) {
+	rc, err := channel.NewREST(restCfg)
+	if err != nil {
+		return nil, err
+	}
 
 	go func() {
 		listen := restCfg.Channel.Listen
@@ -29,7 +32,7 @@ func InitREST(engDeps EngineDeps, storeDeps StorageDeps, auditDeps AuditDeps, re
 		}
 	}()
 
-	return &RESTDeps{Channel: rc}
+	return &RESTDeps{Channel: rc}, nil
 }
 
 // Close shuts down the REST channel.

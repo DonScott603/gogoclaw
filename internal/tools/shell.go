@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // ConfirmFunc is called before executing a shell command.
@@ -44,6 +45,12 @@ func shellExecFn(confirm ConfirmFunc) ToolFunc {
 			return "", fmt.Errorf("shell_exec: empty command")
 		}
 
+		if runtime.GOOS == "windows" {
+			if reason, blocked := isWindowsBlockedCommand(a.Command); blocked {
+				return "", fmt.Errorf("shell_exec: %s", reason)
+			}
+		}
+
 		if confirm != nil && !confirm(a.Command) {
 			return "Command execution denied by user.", nil
 		}
@@ -69,4 +76,26 @@ func shellExecFn(confirm ConfirmFunc) ToolFunc {
 		}
 		return result, nil
 	}
+}
+
+// windowsBlockedCommands maps commands that hang interactively on Windows
+// to their suggested alternatives.
+var windowsBlockedCommands = map[string]string{
+	"date":   `Command "date" is interactive on Windows and would hang. Use PowerShell: Get-Date instead.`,
+	"time":   `Command "time" is interactive on Windows and would hang. Use PowerShell: Get-Date instead.`,
+	"set /p": `Command "set /p" is interactive on Windows and would hang.`,
+	"pause":  `Command "pause" is interactive on Windows and would hang.`,
+}
+
+// isWindowsBlockedCommand checks if the command starts with a known
+// interactive Windows command. Returns the reason and true if blocked.
+func isWindowsBlockedCommand(command string) (string, bool) {
+	trimmed := strings.TrimSpace(command)
+	lower := strings.ToLower(trimmed)
+	for blocked, reason := range windowsBlockedCommands {
+		if lower == blocked || strings.HasPrefix(lower, blocked+" ") || strings.HasPrefix(lower, blocked+"\t") {
+			return reason, true
+		}
+	}
+	return "", false
 }

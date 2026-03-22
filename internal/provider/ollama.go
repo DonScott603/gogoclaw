@@ -19,6 +19,7 @@ type OllamaConfig struct {
 	BaseURL      string
 	DefaultModel string
 	Timeout      time.Duration
+	Transport    http.RoundTripper
 }
 
 // NewOllama creates a new Ollama provider.
@@ -29,6 +30,7 @@ func NewOllama(cfg OllamaConfig) *Ollama {
 			BaseURL:      cfg.BaseURL,
 			DefaultModel: cfg.DefaultModel,
 			Timeout:      cfg.Timeout,
+			Transport:    cfg.Transport,
 		}),
 	}
 }
@@ -59,7 +61,7 @@ func (o *Ollama) Healthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: o.compat.client.Transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
@@ -83,7 +85,7 @@ func (o *Ollama) EnsureModel(ctx context.Context, model string) error {
 	if err != nil {
 		return fmt.Errorf("provider: ollama: check models: %w", err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: o.compat.client.Transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("provider: ollama: check models: %w", err)

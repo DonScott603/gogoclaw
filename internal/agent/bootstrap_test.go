@@ -42,14 +42,14 @@ func TestBootstrapInfrastructure(t *testing.T) {
 
 	// Verify directories were created.
 	for _, dir := range bootstrapDirs {
-		path := filepath.Join(configDir, dir)
+		path := filepath.Join(configDir, dir.Path)
 		info, err := os.Stat(path)
 		if err != nil {
-			t.Errorf("directory %s not created: %v", dir, err)
+			t.Errorf("directory %s not created: %v", dir.Path, err)
 			continue
 		}
 		if !info.IsDir() {
-			t.Errorf("%s is not a directory", dir)
+			t.Errorf("%s is not a directory", dir.Path)
 		}
 	}
 
@@ -1050,7 +1050,7 @@ func TestLoadEnvFileMissing(t *testing.T) {
 func TestBootstrapDirsIncludesMCP(t *testing.T) {
 	found := false
 	for _, d := range bootstrapDirs {
-		if d == "mcp" {
+		if d.Path == "mcp" {
 			found = true
 			break
 		}

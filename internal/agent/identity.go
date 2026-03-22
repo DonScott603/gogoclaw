@@ -53,5 +53,5 @@ func writeIdentityYAML(configDir string, s *BootstrapSummary) error {
 		return err
 	}
 	path := filepath.Join(configDir, "agents", "identity.yaml")
-	return atomicWriteFile(path, data, 0644)
+	return atomicWriteFile(path, data, 0600)
 }

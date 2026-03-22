@@ -24,8 +24,8 @@ func InitSkills(configDir string) SkillDeps {
 	skillsDir := filepath.Join(configDir, "skills.d")
 	reg, err := skill.NewRegistry(skillsDir)
 	if err != nil {
-		log.Printf("skills: user skills scan failed: %v", err)
-		reg, _ = skill.NewRegistry(os.TempDir())
+		log.Printf("skills: user skills scan failed: %v (continuing without user skills)", err)
+		reg = skill.NewEmptyRegistry()
 	}
 
 	builtinDir := resolveBuiltinSkillsDir(configDir)

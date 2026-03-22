@@ -54,6 +54,7 @@ func NewClassifier() *Classifier {
 			{typ: PatternAPIKey, re: regexp.MustCompile(`\b(sk-[a-zA-Z0-9]{20,})\b`)},
 			{typ: PatternBearer, re: regexp.MustCompile(`(?i)(Bearer\s+[a-zA-Z0-9\-_.~+/]{20,})`)},
 			{typ: PatternAWSKey, re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`)},
+			{typ: PatternAPIKey, re: regexp.MustCompile(`\b(ghp_[a-zA-Z0-9]{36,})\b`)},
 		},
 	}
 }

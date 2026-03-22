@@ -2,6 +2,7 @@ package security
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -33,6 +34,25 @@ func (v *PathValidator) Validate(path string) (string, error) {
 		return "", fmt.Errorf("security: path: resolve %q: %w", path, err)
 	}
 	cleaned := filepath.Clean(abs)
+
+	// Resolve symlinks for existing paths to prevent symlink escapes.
+	if _, err := os.Lstat(cleaned); err == nil {
+		resolved, err := filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			return "", fmt.Errorf("security: resolve symlinks: %w", err)
+		}
+		cleaned = resolved
+	} else {
+		// Path doesn't exist yet — resolve parent directory.
+		parent := filepath.Dir(cleaned)
+		if _, err := os.Lstat(parent); err == nil {
+			resolvedParent, err := filepath.EvalSymlinks(parent)
+			if err != nil {
+				return "", fmt.Errorf("security: resolve parent symlinks: %w", err)
+			}
+			cleaned = filepath.Join(resolvedParent, filepath.Base(cleaned))
+		}
+	}
 
 	for _, root := range v.allowedRoots {
 		if isWithin(cleaned, root) {

@@ -46,3 +46,6 @@ GoGoClaw is a security-first AI agent framework in Go. Single binary, no CGo.
 - pkg/types/ — shared types
 - skills/builtin/ — built-in WASM skills
 - templates/ — default configs and prompts
+
+## Cleanup Notes
+- Test skills `hello-skill` and `hello-world` in `~/.gogoclaw/skills.d/` should be deleted if present — they are leftover from Phase 5 testing.

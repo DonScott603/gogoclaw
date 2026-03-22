@@ -30,6 +30,7 @@ type OpenAICompatConfig struct {
 	DefaultModel     string
 	MaxContextTokens int
 	Timeout          time.Duration
+	Transport        http.RoundTripper
 }
 
 // NewOpenAICompat creates a new OpenAI-compatible provider.
@@ -44,7 +45,7 @@ func NewOpenAICompat(cfg OpenAICompatConfig) *OpenAICompat {
 		apiKey:     cfg.APIKey,
 		model:      cfg.DefaultModel,
 		maxContext:  cfg.MaxContextTokens,
-		client:     &http.Client{Timeout: timeout},
+		client:     &http.Client{Timeout: timeout, Transport: cfg.Transport},
 	}
 }
 
@@ -104,6 +105,7 @@ type openaiChoice struct {
 }
 
 type openaiToolCall struct {
+	Index    int    `json:"index"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -249,6 +251,7 @@ func (o *OpenAICompat) doRequest(ctx context.Context, body openaiRequest) (io.Re
 
 func (o *OpenAICompat) parseSSE(ctx context.Context, r io.Reader, ch chan<- StreamChunk) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 512*1024)
 	// Accumulate tool call argument fragments by index.
 	toolCalls := make(map[int]*ToolCall)
 
@@ -292,7 +295,7 @@ func (o *OpenAICompat) parseSSE(ctx context.Context, r io.Reader, ch chan<- Stre
 		}
 
 		for _, tc := range delta.ToolCalls {
-			idx := 0 // default index
+			idx := tc.Index
 			if existing, ok := toolCalls[idx]; ok {
 				existing.Arguments = json.RawMessage(
 					string(existing.Arguments) + tc.Function.Arguments,
@@ -305,5 +308,8 @@ func (o *OpenAICompat) parseSSE(ctx context.Context, r io.Reader, ch chan<- Stre
 				}
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		ch <- StreamChunk{Error: fmt.Errorf("provider: %s: SSE scan: %w", o.name, err), Done: true, Timestamp: time.Now()}
 	}
 }

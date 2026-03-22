@@ -25,7 +25,7 @@ func InitMemory(cfg *config.Config, configDir string, activeProvider provider.Pr
 	deps := MemoryDeps{
 		Store: memory.NoOpVectorStore{},
 		SearchOpts: memory.SearchOptions{
-			MinSimilarity: 0.5,
+			MinSimilarity: 0.3,
 			RecencyWeight: 0.2,
 		},
 		Summarizer: engine.NoOpSummarizer{},

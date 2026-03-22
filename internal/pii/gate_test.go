@@ -222,6 +222,23 @@ func TestGateWarnNotifiesOnSecret(t *testing.T) {
 	}
 }
 
+func TestGateStrictBlocksToolMessageSecrets(t *testing.T) {
+	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
+
+	resp, err := g.Chat(context.Background(), provider.ChatRequest{
+		Messages: []provider.Message{
+			{Role: "user", Content: "Read my config file"},
+			{Role: "tool", Content: "File contents: api_key = sk-abc123def456ghi789jkl012mno345"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content == "ok" {
+		t.Error("strict mode should block API keys found in tool results sent to cloud provider")
+	}
+}
+
 func TestGateStreamStrictBlocks(t *testing.T) {
 	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
 

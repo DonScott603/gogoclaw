@@ -1,5 +1,4 @@
-// Package storage implements SQLite-backed conversation persistence
-// with application-level encryption.
+// Package storage implements SQLite-backed conversation persistence.
 package storage
 
 import (

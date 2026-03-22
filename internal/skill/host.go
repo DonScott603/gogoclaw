@@ -169,6 +169,25 @@ func checkPathAllowed(skillName, path string, allowed []string, op string) error
 	if err != nil {
 		return fmt.Errorf("skill: %s: resolve path: %w", skillName, err)
 	}
+
+	// Resolve symlinks for existing paths to prevent symlink escapes.
+	if _, err := os.Lstat(absPath); err == nil {
+		resolved, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			return fmt.Errorf("skill: %s: resolve symlinks: %w", skillName, err)
+		}
+		absPath = resolved
+	} else {
+		parent := filepath.Dir(absPath)
+		if _, err := os.Lstat(parent); err == nil {
+			resolvedParent, err := filepath.EvalSymlinks(parent)
+			if err != nil {
+				return fmt.Errorf("skill: %s: resolve parent symlinks: %w", skillName, err)
+			}
+			absPath = filepath.Join(resolvedParent, filepath.Base(absPath))
+		}
+	}
+
 	// Normalize to forward slashes for consistent comparison.
 	absPath = filepath.ToSlash(absPath)
 
@@ -176,6 +195,11 @@ func checkPathAllowed(skillName, path string, allowed []string, op string) error
 		absAllowed, err := filepath.Abs(a)
 		if err != nil {
 			continue
+		}
+		if _, err := os.Lstat(absAllowed); err == nil {
+			if resolved, err := filepath.EvalSymlinks(absAllowed); err == nil {
+				absAllowed = resolved
+			}
 		}
 		absAllowed = filepath.ToSlash(absAllowed)
 		if absPath == absAllowed || strings.HasPrefix(absPath, absAllowed+"/") {

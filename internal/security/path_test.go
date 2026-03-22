@@ -1,6 +1,7 @@
 package security
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -100,5 +101,35 @@ func TestValidateRelative(t *testing.T) {
 	_, err = pv.ValidateRelative(root, "../../etc/passwd")
 	if err == nil {
 		t.Error("expected error for relative traversal")
+	}
+}
+
+func TestPathValidatorRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+
+	workspace := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a file outside the workspace.
+	outsideFile := filepath.Join(outside, "secret.txt")
+	os.WriteFile(outsideFile, []byte("secret"), 0644)
+
+	// Create a symlink inside the workspace pointing outside.
+	symlink := filepath.Join(workspace, "escape")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	pv, err := NewPathValidator([]string{workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink target is outside workspace — should be rejected.
+	_, err = pv.Validate(filepath.Join(symlink, "secret.txt"))
+	if err == nil {
+		t.Error("expected error for symlink escape path")
 	}
 }

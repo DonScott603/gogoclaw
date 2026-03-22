@@ -15,6 +15,7 @@ logging:
 storage:
   conversations:
     path: "~/.gogoclaw/data/conversations.db"
-    encrypt: true
+    # Encryption is not yet implemented; this field is reserved for future use.
+    encrypt: false
     passphrase_env: "GOGOCLAW_DB_PASSPHRASE"
   ephemeral_mode: false

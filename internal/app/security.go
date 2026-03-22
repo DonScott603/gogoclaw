@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/config"
@@ -38,7 +39,8 @@ func InitSecurity(cfg *config.Config, auditDeps AuditDeps) (SecurityDeps, error)
 	scrubber := security.NewSecretScrubber()
 	auditDeps.Logger.SetScrubber(scrubber)
 
-	p, err := buildProvider(cfg)
+	providerTransport := netGuard.Transport("provider")
+	p, err := buildProvider(cfg, providerTransport)
 	if err != nil {
 		return SecurityDeps{}, fmt.Errorf("provider: %w", err)
 	}
@@ -70,7 +72,7 @@ func InitSecurity(cfg *config.Config, auditDeps AuditDeps) (SecurityDeps, error)
 	}, nil
 }
 
-func buildProvider(cfg *config.Config) (provider.Provider, error) {
+func buildProvider(cfg *config.Config, transport http.RoundTripper) (provider.Provider, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, fmt.Errorf("no providers configured; add a YAML file to ~/.gogoclaw/providers/")
 	}
@@ -85,15 +87,24 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 			if !ok {
 				continue
 			}
-			providers = append(providers, makeProvider(pc))
+			providers = append(providers, makeProvider(pc, transport))
 			timeouts = append(timeouts, entry.Timeout)
 			retries = append(retries, entry.Retry)
 		}
 	}
 
 	if len(providers) == 0 {
-		for _, pc := range cfg.Providers {
-			providers = append(providers, makeProvider(pc))
+		keys := make([]string, 0, len(cfg.Providers))
+		for k := range cfg.Providers {
+			if k == "example" {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			pc := cfg.Providers[k]
+			providers = append(providers, makeProvider(pc, transport))
 			timeouts = append(timeouts, pc.Timeout)
 			retries = append(retries, pc.Retry)
 		}
@@ -108,7 +119,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	return provider.NewRouter(providers, timeouts, retries), nil
 }
 
-func makeProvider(pc config.ProviderConfig) provider.Provider {
+func makeProvider(pc config.ProviderConfig, transport http.RoundTripper) provider.Provider {
 	switch pc.Type {
 	case "ollama":
 		return provider.NewOllama(provider.OllamaConfig{
@@ -116,6 +127,7 @@ func makeProvider(pc config.ProviderConfig) provider.Provider {
 			BaseURL:      pc.BaseURL,
 			DefaultModel: pc.DefaultModel,
 			Timeout:      pc.Timeout,
+			Transport:    transport,
 		})
 	default:
 		return provider.NewOpenAICompat(provider.OpenAICompatConfig{
@@ -125,6 +137,7 @@ func makeProvider(pc config.ProviderConfig) provider.Provider {
 			DefaultModel:     pc.DefaultModel,
 			MaxContextTokens: pc.MaxContextTokens,
 			Timeout:          pc.Timeout,
+			Transport:        transport,
 		})
 	}
 }
@@ -136,7 +149,16 @@ func firstProvider(cfg *config.Config) *config.ProviderConfig {
 			return &pc
 		}
 	}
-	for _, pc := range cfg.Providers {
+	keys := make([]string, 0, len(cfg.Providers))
+	for k := range cfg.Providers {
+		if k == "example" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		pc := cfg.Providers[k]
 		return &pc
 	}
 	return nil

@@ -119,7 +119,7 @@ func main() {
 
 	// Start REST channel if enabled.
 	if restCfg, ok := cfg.Channels["rest"]; ok && restCfg.Enabled {
-		restDeps := app.InitREST(engDeps, storeDeps, auditDeps, channel.RESTConfig{
+		restDeps, err := app.InitREST(engDeps, storeDeps, auditDeps, channel.RESTConfig{
 			Channel:     restCfg,
 			Engine:      engDeps.Engine,
 			Store:       storeDeps.Store,
@@ -127,6 +127,9 @@ func main() {
 			AuditLogger: auditDeps.Logger,
 			InboxDir:    storeDeps.Workspace.Inbox,
 		})
+		if err != nil {
+			log.Fatalf("rest: %v", err)
+		}
 		defer restDeps.Close()
 	}
 
