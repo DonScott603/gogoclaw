@@ -23,7 +23,7 @@ func InitREST(engDeps EngineDeps, storeDeps StorageDeps, auditDeps AuditDeps, re
 			listen = "127.0.0.1:8080"
 		}
 		log.Printf("rest: listening on %s", listen)
-		log.Printf("rest: API key: %s", rc.APIKey())
+		log.Printf("rest: API key configured (length %d)", len(rc.APIKey()))
 		if err := rc.Start(context.Background()); err != nil {
 			log.Printf("rest: %v", err)
 		}
