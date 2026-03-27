@@ -44,7 +44,7 @@ func main() {
 	auditDeps := app.InitAudit(cfg, configDir)
 	defer auditDeps.Logger.Close()
 
-	secDeps, err := app.InitSecurity(cfg, auditDeps)
+	secDeps, err := app.InitSecurity(cfg, auditDeps, configDir)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -93,7 +93,7 @@ func main() {
 				memDeps.Close()
 				engDeps.Monitor.Stop()
 
-				newSecDeps, err := app.InitSecurity(cfg, auditDeps)
+				newSecDeps, err := app.InitSecurity(cfg, auditDeps, configDir)
 				if err != nil {
 					log.Fatalf("security re-init after bootstrap: %v", err)
 				}

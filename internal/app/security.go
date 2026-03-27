@@ -2,10 +2,12 @@ package app
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/DonScott603/gogoclaw/internal/agent"
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/pii"
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -22,8 +24,23 @@ type SecurityDeps struct {
 	PIIMode        pii.Mode
 }
 
+// preBootstrapDomains are common cloud provider API domains temporarily
+// allowed during bootstrap so the initial LLM call can succeed before
+// the user's network.yaml is written.
+var preBootstrapDomains = []string{
+	"api.openai.com",
+	"api.anthropic.com",
+	"api.groq.com",
+	"generativelanguage.googleapis.com",
+	"api.mistral.ai",
+	"api.together.xyz",
+}
+
 // InitSecurity sets up network guard, secret scrubber, provider, and PII gate.
-func InitSecurity(cfg *config.Config, auditDeps AuditDeps) (SecurityDeps, error) {
+// configDir is used to detect whether bootstrap has run yet; if not,
+// common cloud provider domains are temporarily allowed so the bootstrap
+// LLM call can succeed.
+func InitSecurity(cfg *config.Config, auditDeps AuditDeps, configDir string) (SecurityDeps, error) {
 	netGuard := security.NewNetworkGuard(security.NetworkGuardConfig{
 		Allowlist:     cfg.Network.Allowlist,
 		DenyAllOthers: cfg.Network.DenyAllOthers,
@@ -32,8 +49,15 @@ func InitSecurity(cfg *config.Config, auditDeps AuditDeps) (SecurityDeps, error)
 			auditDeps.Logger.LogNetworkBlocked(domain, requester, "not_in_allowlist")
 		},
 	})
-	if agent, ok := cfg.Agents["base"]; ok {
-		netGuard.AddAgentAllowlist(agent.Network.AdditionalAllowlist)
+	if ac, ok := cfg.Agents["base"]; ok {
+		netGuard.AddAgentAllowlist(ac.Network.AdditionalAllowlist)
+	}
+
+	// Pre-bootstrap: temporarily allow common provider domains so the
+	// bootstrap LLM call can succeed before network.yaml is written.
+	if !agent.IsBootstrapped(configDir) {
+		log.Printf("security: pre-bootstrap: temporarily allowing common provider domains")
+		netGuard.AddAgentAllowlist(preBootstrapDomains)
 	}
 
 	scrubber := security.NewSecretScrubber()
