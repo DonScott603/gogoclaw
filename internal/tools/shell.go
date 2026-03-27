@@ -81,8 +81,8 @@ func shellExecFn(confirm ConfirmFunc) ToolFunc {
 // windowsBlockedCommands maps commands that hang interactively on Windows
 // to their suggested alternatives.
 var windowsBlockedCommands = map[string]string{
-	"date":   `Command "date" is interactive on Windows and would hang. Use PowerShell: Get-Date instead.`,
-	"time":   `Command "time" is interactive on Windows and would hang. Use PowerShell: Get-Date instead.`,
+	"date":   `Command "date" is interactive on Windows and would hang. Use: powershell -command Get-Date`,
+	"time":   `Command "time" is interactive on Windows and would hang. Use: powershell -command Get-Date -Format HH:mm:ss`,
 	"set /p": `Command "set /p" is interactive on Windows and would hang.`,
 	"pause":  `Command "pause" is interactive on Windows and would hang.`,
 }
