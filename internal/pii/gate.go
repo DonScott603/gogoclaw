@@ -138,10 +138,10 @@ func (g *Gate) checkMessages(messages []provider.Message, conversationID string)
 		return nil
 	}
 
-	// Scan user and tool messages for PII/secrets.
+	// Scan all non-assistant messages for PII/secrets (system, user, tool).
 	var allDetections []Detection
 	for _, msg := range messages {
-		if msg.Role != "user" && msg.Role != "tool" {
+		if msg.Role == "assistant" {
 			continue
 		}
 		detections := g.classifier.Detect(msg.Content)

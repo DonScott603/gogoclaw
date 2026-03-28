@@ -239,6 +239,23 @@ func TestGateStrictBlocksToolMessageSecrets(t *testing.T) {
 	}
 }
 
+func TestGateStrictBlocksSystemMessagePII(t *testing.T) {
+	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
+
+	resp, err := g.Chat(context.Background(), provider.ChatRequest{
+		Messages: []provider.Message{
+			{Role: "system", Content: "You are helping user John. His SSN is 123-45-6789."},
+			{Role: "user", Content: "Hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content == "ok" {
+		t.Error("strict mode should block PII found in system messages sent to cloud provider")
+	}
+}
+
 func TestGateStreamStrictBlocks(t *testing.T) {
 	g := NewGate(&mockProvider{}, GateConfig{Mode: ModeStrict, IsLocal: false})
 

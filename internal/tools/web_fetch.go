@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,11 @@ func webFetchFn(transport http.RoundTripper) ToolFunc {
 		}
 		defer resp.Body.Close()
 
+		ct := resp.Header.Get("Content-Type")
+		if ct != "" && !isTextContentType(ct) {
+			return "", fmt.Errorf("web_fetch: unsupported content type: %s (only text/* and application/json accepted)", ct)
+		}
+
 		// Limit read to 1MB.
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
@@ -65,4 +71,22 @@ func webFetchFn(transport http.RoundTripper) ToolFunc {
 
 		return fmt.Sprintf("HTTP %d\n%s", resp.StatusCode, string(body)), nil
 	}
+}
+
+// isTextContentType returns true for text-based content types that are safe
+// to read as string content.
+func isTextContentType(ct string) bool {
+	// Strip parameters (e.g., "; charset=utf-8").
+	if idx := strings.IndexByte(ct, ';'); idx >= 0 {
+		ct = ct[:idx]
+	}
+	ct = strings.TrimSpace(strings.ToLower(ct))
+	if strings.HasPrefix(ct, "text/") {
+		return true
+	}
+	switch ct {
+	case "application/json", "application/xml", "application/javascript":
+		return true
+	}
+	return false
 }
