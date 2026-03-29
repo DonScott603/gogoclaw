@@ -17,6 +17,7 @@ import (
 // SecurityDeps holds network guard, transport, scrubber, and PII gate.
 type SecurityDeps struct {
 	NetTransport   http.RoundTripper
+	MCPTransport   http.RoundTripper
 	Scrubber       *security.SecretScrubber
 	RawProvider    provider.Provider
 	ActiveProvider provider.Provider // PII-gated
@@ -88,6 +89,7 @@ func InitSecurity(cfg *config.Config, auditDeps AuditDeps, configDir string) (Se
 
 	return SecurityDeps{
 		NetTransport:   netGuard.Transport("web_fetch"),
+		MCPTransport:   netGuard.Transport("mcp"),
 		Scrubber:       scrubber,
 		RawProvider:    p,
 		ActiveProvider: gate,

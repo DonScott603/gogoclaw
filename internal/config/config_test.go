@@ -238,3 +238,49 @@ embedding:
 		t.Errorf("memory.embedding.provider = %q, want %q (separate file should override inline)", cfg.Memory.Embedding.Provider, "file-provider")
 	}
 }
+
+func TestLoaderMCPConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	mcpDir := filepath.Join(dir, "mcp")
+	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpYAML := `
+name: "test-server"
+transport: "stdio"
+command: "node"
+args: ["server.js", "--port", "3000"]
+enabled: true
+`
+	if err := os.WriteFile(filepath.Join(mcpDir, "test-server.yaml"), []byte(mcpYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := NewLoader(dir)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	mc, ok := cfg.MCP["test-server"]
+	if !ok {
+		t.Fatal("MCP server 'test-server' not found in config")
+	}
+	if mc.Name != "test-server" {
+		t.Errorf("name = %q, want %q", mc.Name, "test-server")
+	}
+	if mc.Transport != "stdio" {
+		t.Errorf("transport = %q, want %q", mc.Transport, "stdio")
+	}
+	if mc.Command != "node" {
+		t.Errorf("command = %q, want %q", mc.Command, "node")
+	}
+	if len(mc.Args) != 3 || mc.Args[0] != "server.js" {
+		t.Errorf("args = %v, want [server.js --port 3000]", mc.Args)
+	}
+	if !mc.Enabled {
+		t.Error("enabled should be true")
+	}
+}

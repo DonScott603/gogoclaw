@@ -11,8 +11,9 @@ type Config struct {
 	Providers map[string]ProviderConfig `yaml:"providers" json:"providers"`
 	Agents    map[string]AgentConfig   `yaml:"agents" json:"agents"`
 	Channels  map[string]ChannelConfig `yaml:"channels" json:"channels"`
-	Network   NetworkConfig            `yaml:"network" json:"network"`
-	Memory    MemoryStoreConfig        `yaml:"memory" json:"memory"`
+	Network   NetworkConfig              `yaml:"network" json:"network"`
+	Memory    MemoryStoreConfig          `yaml:"memory" json:"memory"`
+	MCP       map[string]MCPServerConfig `yaml:"mcp" json:"mcp"`
 }
 
 // WorkspaceConfig defines workspace directory paths.
@@ -179,4 +180,14 @@ type RetrievalConfig struct {
 	TopK               int     `yaml:"top_k" json:"top_k"`
 	RelevanceThreshold float64 `yaml:"relevance_threshold" json:"relevance_threshold"`
 	RecencyWeight      float64 `yaml:"recency_weight" json:"recency_weight"`
+}
+
+// MCPServerConfig defines an MCP (Model Context Protocol) server connection.
+type MCPServerConfig struct {
+	Name      string   `yaml:"name" json:"name"`
+	Transport string   `yaml:"transport" json:"transport"` // "stdio" or "sse"
+	Command   string   `yaml:"command,omitempty" json:"command,omitempty"`
+	Args      []string `yaml:"args,omitempty" json:"args,omitempty"`
+	URL       string   `yaml:"url,omitempty" json:"url,omitempty"`
+	Enabled   bool     `yaml:"enabled" json:"enabled"`
 }

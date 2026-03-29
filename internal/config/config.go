@@ -45,6 +45,9 @@ func (l *Loader) Load() (*Config, error) {
 	if err := l.loadMemory(cfg); err != nil {
 		return nil, err
 	}
+	if err := l.loadMCP(cfg); err != nil {
+		return nil, err
+	}
 
 	if err := Validate(cfg); err != nil {
 		return nil, fmt.Errorf("config: validation: %w", err)
@@ -145,6 +148,21 @@ func (l *Loader) loadNetwork(cfg *Config) error {
 	return l.loadYAML("network.yaml", &cfg.Network)
 }
 
+// loadMCP scans the mcp/ directory for MCP server configs.
+func (l *Loader) loadMCP(cfg *Config) error {
+	return l.loadDir("mcp", func(path, defaultName string) error {
+		var mc MCPServerConfig
+		if err := l.loadYAMLFile(path, &mc); err != nil {
+			return err
+		}
+		if mc.Name == "" {
+			mc.Name = defaultName
+		}
+		cfg.MCP[defaultName] = mc
+		return nil
+	})
+}
+
 // loadMemory reads memory/config.yaml if it exists.
 // Memory config can also be specified inline in the root config.yaml under the "memory" key.
 // The separate file takes precedence if present.
@@ -199,6 +217,7 @@ func DefaultConfig() *Config {
 		Providers: make(map[string]ProviderConfig),
 		Agents:    make(map[string]AgentConfig),
 		Channels:  make(map[string]ChannelConfig),
+		MCP:       make(map[string]MCPServerConfig),
 		Network: NetworkConfig{
 			Allowlist:     []string{"localhost", "127.0.0.1"},
 			DenyAllOthers: true,

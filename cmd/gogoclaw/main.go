@@ -105,6 +105,10 @@ func main() {
 		}
 	}
 
+	// Connect MCP servers and register their tools with the dispatcher.
+	mcpDeps := app.InitMCP(cfg, engDeps.Dispatcher, engDeps.Monitor, secDeps.MCPTransport)
+	defer mcpDeps.Close()
+
 	// Create TUI and wire observers.
 	program := tui.New(engDeps.Engine, tui.WithHealthMonitor(engDeps.Monitor))
 	gate.SetProgram(program)
