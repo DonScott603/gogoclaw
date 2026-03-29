@@ -7,16 +7,78 @@ Phases 1–7 deliver a production-ready, security-first AI agent framework: sing
 This roadmap covers Phases 8–12, expanding GoGoClaw from a single-user agent framework into a multi-channel, multi-runtime, orchestration-capable agent platform.
 
 **Known footguns carried forward from Phase 7:**
-- Windows `date` command is interactive and hangs `shell_exec` — needs platform-aware command handling.
+- `shell_exec` blocklist covers `date`, `time`, `set /p`, and `pause` on Windows, but does not cover `choice`, `more`, `cmd /k`, or PowerShell's `Read-Host`. Unix interactive commands (`vi`, `less`, `top`, `read`) are not blocked at all. A configurable execution timeout with process kill is needed (addressed in Phase 8a).
 - Clean up test skills (`hello-skill`, `hello-world`) in `~/.gogoclaw/skills.d/`.
+- REST API has no rate limiting. Valid API keys can fire unlimited requests (addressed in Phase 8a).
+- Audit log (`gogoclaw.jsonl`) is append-only but has no tamper detection. An attacker with filesystem access can silently modify or truncate it (addressed in Phase 9f).
+- Token counting uses `len(content)/4` heuristic everywhere. Context window budgeting is unreliable for models with large context windows (128k+). Real tokenizer integration is needed (addressed in Phase 8c).
+- Bootstrap hardcodes `max_context_tokens: 8192` in generated provider YAML, which is wrong for GPT-4o (128k), Claude (200k), etc. Needs model-aware defaults (addressed in Phase 9d).
+
+**Resolved in Phase 7b (no longer footguns):**
+- ~~Windows `date` command hangs `shell_exec`~~ — blocked with error message suggesting `powershell -command Get-Date`.
+- ~~Network allowlist bypassed by providers~~ — NetworkGuard transport injected into all provider HTTP clients.
+- ~~REST API key logged in plaintext~~ — now logs only key length.
+- ~~PII gate only scanned user messages~~ — now scans user, tool, and system messages.
+- ~~Telegram open by default with empty allowlist~~ — now fail-closed.
+- ~~Upload files overwrite on collision~~ — timestamp-prefixed filenames.
+- ~~Symlink traversal in path validation~~ — EvalSymlinks resolution added.
+- ~~debug_prompt.txt written to disk~~ — removed.
+- ~~REST fallback key "gogoclaw-fallback-key"~~ — removed, fails startup instead.
 
 ---
 
-## Phase 8: Provider Expansion
+## Phase 8: Foundation Hardening & Provider Expansion
 
-**Goal:** Expand provider support and introduce intelligent model routing.
+**Goal:** Fix the shared-engine architecture that all four code audits identified as the #1 correctness bug, add operational hardening, then expand provider support and introduce intelligent model routing.
 
-### Phase 8a: Telegram Webhook Mode
+### Phase 8a: Per-Conversation Session State & Operational Hardening
+
+**Goal:** Eliminate cross-conversation context bleed and add missing operational safety mechanisms.
+
+**Why this is first:** The engine currently holds a single `history` slice and a single `convID` as instance fields, shared across TUI, REST, and Telegram. Every audit independently identified this as the most critical architectural issue. Multi-channel features in Phases 9–12 are architecturally unsound without this fix. REST and Telegram should not be exposed to multiple users until this is resolved.
+
+**Tasks:**
+
+1. **Per-conversation session state**
+   - Extract `history []provider.Message` and `convID string` from `Engine` into a `Session` struct
+   - `SessionManager` keyed by channel + conversation ID, with session creation/lookup/cleanup
+   - Each channel request gets its own session with independent history, PII mode, and agent profile
+   - Engine becomes stateless: shared provider, dispatcher, assembler config, but no per-conversation state
+   - Remove `Engine.SetConversationID` — it is a design smell that all audits flagged
+
+2. **Wire conversation persistence**
+   - Messages written to SQLite per-session via `storage.Store.AddMessage` on every user/assistant/tool message
+   - Session restore on reconnect: load history from SQLite when a known conversation ID is received
+   - This makes the SQLite store a system of record, not dead code (flagged by all audits)
+
+3. **Graceful shutdown with context propagation**
+   - Create a root context with `signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)` in `main.go`
+   - Propagate to all subsystems: Telegram long-polling, REST HTTP server, health monitor, MCP clients
+   - On signal: flush pending messages, close channels, stop health monitor, close MCP clients, close storage
+   - Replace `context.Background()` in channel message handlers and memory search with the propagated context
+
+4. **`shell_exec` configurable timeout**
+   - Add `shell.timeout` field to agent config (default: 30s)
+   - Wrap `exec.CommandContext` with a context derived from the configured timeout
+   - On timeout, kill the process and return an error: "Command timed out after 30s and was terminated"
+   - This replaces the incomplete blocklist approach as the primary safety mechanism — the blocklist remains as a fast-path UX improvement
+
+5. **REST API rate limiting**
+   - Add a simple token bucket rate limiter to the REST auth middleware
+   - Configurable in channel config: `rate_limit` (requests per minute, default: 60)
+   - Return 429 Too Many Requests when exceeded
+   - Rate limit is per API key (relevant when multiple keys are supported in the future)
+
+6. **Audit logging for LLM requests and tool calls**
+   - Wire `auditDeps.Logger.LogLLMRequest` into the provider path (log model, token counts, latency — not content)
+   - Wire `auditDeps.Logger.LogToolCall` into the dispatcher callbacks
+   - These event types exist in the audit logger but were never emitted (flagged by audits)
+
+**Milestone:** Each conversation has independent state. Multi-channel operation is correct. The system shuts down cleanly. Shell commands can't hang forever. REST API resists abuse. All LLM and tool activity is audit-logged.
+
+---
+
+### Phase 8b: Telegram Webhook Mode
 
 **Goal:** Replace long polling with webhook-based message delivery for production Telegram deployments.
 
@@ -41,7 +103,7 @@ This roadmap covers Phases 8–12, expanding GoGoClaw from a single-user agent f
 
 ---
 
-### Phase 8b: Native Anthropic Provider
+### Phase 8c: Native Anthropic Provider
 
 **Goal:** First-class Anthropic API support with features that don't work through OpenAI-compatible shims.
 
@@ -76,7 +138,7 @@ This roadmap covers Phases 8–12, expanding GoGoClaw from a single-user agent f
 
 ---
 
-### Phase 8c: Tiered Model Routing Policy
+### Phase 8d: Tiered Model Routing Policy
 
 **Goal:** Automatically route messages to the most cost-effective model that can handle the task.
 
@@ -117,6 +179,8 @@ This roadmap covers Phases 8–12, expanding GoGoClaw from a single-user agent f
            - "long_context"
            - "code_generation"
    ```
+
+   *Note: Model identifiers in the example above are illustrative. Users should use current model identifiers from their provider's documentation.*
 
 4. **Audit integration**
    - Log routing decisions in audit trail: which tier was selected, why, what the alternatives were
@@ -371,7 +435,7 @@ This roadmap covers Phases 8–12, expanding GoGoClaw from a single-user agent f
 
 5. **BootstrapSummary expansion**
    - New fields on the summary struct to capture all new preferences
-   - `routing_mode`: "fallback" or "tiered"
+   - `routing_mode`: "hybrid" or "tiered" (matches existing validated config values from Phase 7b; "hybrid" covers the simple failover chain use case)
    - `reasoning_provider`: which provider handles complex tasks (empty for fallback mode)
    - `verbosity`, `proactiveness`, `uncertainty_handling`, `reasoning_visibility`
    - `shell_confirm_mode`, `file_write_confirm_mode`
@@ -470,6 +534,26 @@ Ctrl+K  Command Palette (fuzzy search to any panel or action)
 ```
 
 **Milestone:** The TUI is a comprehensive, power-user-friendly interface with full skill management, audit visibility, memory browsing, workspace navigation, search, export, shortcuts, and visual refinements.
+
+---
+
+### Phase 9f: Audit Log Integrity
+
+**Goal:** Add tamper detection to the audit trail.
+
+**Tasks:**
+
+1. **HMAC chain**
+   - Each audit log entry includes an HMAC of the current entry + previous entry's HMAC, creating a hash chain
+   - HMAC key derived from a configurable secret (env var or config)
+   - Verification tool: `gogoclaw audit verify` checks the chain and reports any broken links
+   - First entry in a new log file includes a chain-start marker
+
+2. **Log rotation**
+   - Configurable log rotation by size or date (default: rotate daily, keep 30 days)
+   - Each rotated file includes its final HMAC for cross-file chain verification
+
+**Milestone:** Audit log tampering is detectable. Compliance-sensitive deployments can verify log integrity.
 
 ---
 
@@ -757,6 +841,7 @@ Ctrl+K  Command Palette (fuzzy search to any panel or action)
    - **Linux (strong sandbox):** seccomp-bpf syscall filtering (block `socket`, `connect`, `open` outside allowed fds, `execve`) + Landlock filesystem isolation (skill can only see its own directory and broker-granted paths) + PID namespace isolation + scrubbed environment variables. Enforcement is at the OS kernel level — a malicious skill genuinely cannot bypass it.
    - **macOS (basic protections):** Clean environment (no inherited env vars except explicit ones), restricted working directory (temp scratch space), timeout enforcement via process kill, stdin/stdout-only communication. The capability broker protocol is the primary enforcement mechanism. **Users should only run trusted skills.**
    - **Windows (basic protections):** Same as macOS baseline — clean environment, restricted working directory, timeout enforcement. Job Objects for resource limits (memory, CPU) but no filesystem or network isolation. **Users should only run trusted skills.**
+   - **Network governance:** Subprocess skills do not get direct network access. HTTP requests go through the capability broker, which proxies them through the existing `NetworkGuard` transport (established in Phase 7b). This ensures subprocess skills are subject to the same domain allowlist as WASM skills and core tools.
    - **Graceful degradation within Linux:** Detect kernel capabilities at startup. Landlock requires 5.13+, seccomp-bpf requires 3.17+. Report sandbox level in health dashboard: `full isolation` / `partial (no filesystem isolation)` / `basic (same as macOS/Windows)`.
    - **User communication:** Skill install time shows platform-specific security context. TUI/channels show sandbox level per skill. Documentation includes a clear platform comparison table.
 
@@ -1139,15 +1224,17 @@ Ctrl+K  Command Palette (fuzzy search to any panel or action)
 ## Dependency Map
 
 ```
-Phase 8a  (Telegram webhook)   ── standalone
-Phase 8b  (Anthropic)          ── standalone
-Phase 8c  (Tiered routing)     ── depends on 8b (needs multiple providers)
+Phase 8a  (Session & hardening) ── prerequisite for all multi-channel work (Phases 9–12)
+Phase 8b  (Telegram webhook)   ── depends on 8a (correct session state needed for webhook mode)
+Phase 8c  (Anthropic)          ── standalone (can parallelize with 8b after 8a)
+Phase 8d  (Tiered routing)     ── depends on 8c (needs multiple providers)
 
-Phase 9a  (TUI settings)       ── standalone (benefits from 8c for routing management UI)
-Phase 9b  (Cost tracking)      ── standalone (uses existing audit trail, benefits from 8c for savings display)
+Phase 9a  (TUI settings)       ── standalone (benefits from 8d for routing management UI)
+Phase 9b  (Cost tracking)      ── standalone (uses existing audit trail, benefits from 8d for savings display)
 Phase 9c  (Skills manager)     ── standalone (uses existing skill registry, prepares for 11d/11e subprocess skills)
-Phase 9d  (Bootstrap improve)  ── benefits from 8c (routing mode question), benefits from 9a (settings must reflect bootstrap fields)
+Phase 9d  (Bootstrap improve)  ── benefits from 8d (routing mode question), benefits from 9a (settings must reflect bootstrap fields)
 Phase 9e  (TUI enhancements)   ── benefits from 9a–9c (command palette needs to know all panels)
+Phase 9f  (Audit integrity)    ── standalone (enhances audit log from 8a; audit viewer in 9e can show chain status)
 
 Phase 10a (Web UI)             ── depends on 9a–9e (inherits interaction patterns, settings, skills, and panel architecture)
 Phase 10b (Discord)            ── follows Telegram channel pattern, inherits slash commands from 9e
