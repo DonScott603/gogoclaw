@@ -90,7 +90,7 @@ The framework enforces a strict three-layer separation:
 
 ### Prerequisites
 
-- Go 1.22 or later (the project targets Go 1.26, but 1.22+ should work)
+- Go 1.26 or later (install from https://go.dev/dl/)
 - An API key for an OpenAI-compatible provider, or a running Ollama instance
 
 ### Install and Build
