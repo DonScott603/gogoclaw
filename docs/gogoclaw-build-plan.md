@@ -8,6 +8,18 @@ GoGoClaw is a security-first AI agent framework written in Go, designed as an al
 
 ---
 
+## Current Status
+
+**Phases 1–7 are complete.** The system is functional end-to-end: bootstrap → configure → chat via TUI, REST API, or Telegram, with WASM skill support and MCP client integration.
+
+See [docs/status.md](status.md) for per-module implementation detail. Key items not yet implemented:
+- At-rest encryption (config flags reserved, implementation planned)
+- Conversation persistence wiring (SQLite store exists but not connected to live message flow)
+- Per-conversation session isolation (single shared engine)
+- Dockerfile and systemd unit file (deferred from Phase 7)
+
+---
+
 ## Architecture
 
 ### Design Principles
@@ -84,7 +96,7 @@ gogoclaw/
 │   │   ├── provider.go             # Provider interface definition
 │   │   ├── ollama.go               # Native Ollama client
 │   │   ├── openai_compat.go        # Generic OpenAI-compatible client
-│   │   ├── anthropic.go            # Native Anthropic client (optional)
+│   │   ├── anthropic.go            # Native Anthropic client (planned)
 │   │   ├── router.go               # Provider chain failover logic
 │   │   └── token_counter.go        # Token counting per provider/model
 │   ├── pii/
@@ -119,8 +131,8 @@ gogoclaw/
 │   │   └── vectorstore.go          # VectorStore interface (chromem-go implementation)
 │   ├── storage/
 │   │   ├── conversations.go        # SQLite conversation/message persistence
-│   │   ├── encryption.go           # At-rest encryption for SQLite and memory
-│   │   └── migrations.go           # Schema versioning and migrations
+│   │   ├── encryption.go           # At-rest encryption for SQLite and memory (planned)
+│   │   └── migrations.go           # Schema versioning and migrations (planned)
 │   ├── channel/
 │   │   ├── channel.go              # Channel interface definition
 │   │   ├── telegram.go             # Telegram Bot API adapter
@@ -138,7 +150,7 @@ gogoclaw/
 │   ├── security/
 │   │   ├── network.go              # Domain allowlist enforcement for all HTTP
 │   │   ├── path.go                 # Path traversal prevention and validation
-│   │   ├── signing.go              # Skill signing verification
+│   │   ├── signing.go              # Skill signing verification (planned — hash-only today)
 │   │   ├── secrets.go              # Secret storage (env vars, keyring, encrypted config)
 │   │   └── sanitizer.go            # Input sanitization between LLM and skills
 │   ├── audit/
@@ -190,8 +202,8 @@ gogoclaw/
 ├── go.mod
 ├── go.sum
 ├── Makefile                        # Build targets: build, test, lint, install
-├── Dockerfile                      # Minimal container (non-root, read-only rootfs)
-├── gogoclaw.service                # systemd unit file with hardening
+├── Dockerfile                      # Minimal container (planned — deferred from Phase 7)
+├── gogoclaw.service                # systemd unit file (planned — deferred from Phase 7)
 ├── LICENSE                         # Apache 2.0
 ├── README.md
 └── CLAUDE.md                       # Instructions for Claude Code when working on this repo
@@ -507,6 +519,8 @@ Runs before every LLM request in hybrid or cloud-only mode (when not disabled).
 - Secrets never written to config files, logs, or conversation history
 - Memory system scrubs detected secrets before persisting
 
+> **Note:** At-rest encryption is not yet implemented. The `encrypt` config flags in storage and audit configs are reserved for future use.
+
 ### Layer 5: Skill Provenance
 
 - **Signing:** Skills can be signed; core verifies signature before loading
@@ -522,7 +536,9 @@ Runs before every LLM request in hybrid or cloud-only mode (when not disabled).
 
 ### Layer 7: Audit Trail
 
-Structured JSON Lines log at `~/.gogoclaw/audit/gogoclaw.jsonl`:
+Structured JSON Lines log at `~/.gogoclaw/audit/gogoclaw.jsonl`.
+
+> **Note:** Audit log encryption is not yet implemented. The `encrypt` flag in the audit config is reserved for future use.
 
 ```json
 {"ts":"2026-03-09T10:30:00Z","event":"llm_request","provider":"minimax","model":"MiniMax-M2.1","tokens_in":1240,"tokens_out":856,"pii_detected":false,"agent":"base"}
@@ -697,6 +713,8 @@ type SkillPermissions struct {
     MaxExecutionTime string `yaml:"max_execution_time"`
 }
 ```
+
+> **Note:** The SkillRuntime signing verification path is optional. Today, only hash pinning is enforced at load time. Full signature verification (public key + signing chain) is planned for a future phase.
 
 ---
 
@@ -947,6 +965,8 @@ type SkillPermissions struct {
 
 **Milestone:** Full end-to-end flow: bootstrap → configure → chat via TUI, Telegram, or REST API.
 
+**Completed:** REST channel with API key auth, CORS, pagination, file upload. Telegram channel with access control, message splitting, file handling. Bootstrap ritual with multi-provider support, interactive Q&A, env var collection with hidden input. Agent profile system with identity.yaml and template variable resolution ({{user_name}}, {{agent_name}}).
+
 ---
 
 ### Phase 7: MCP Support & Polish (Weeks 18–20)
@@ -966,25 +986,37 @@ type SkillPermissions struct {
    - Apply same permission model: allowlist which MCP servers, optionally filter tools
    - Health monitoring for MCP server connections
 
-3. **System hardening**
+3. **Security hardening (Phase 7b)** — 19 audit-driven fixes:
+   - Removed REST fallback key (fail on rand error instead of predictable credential)
+   - Tightened file permissions (0600/0700 for sensitive files and directories)
+   - Injected NetworkGuard transport into all provider HTTP clients
+   - Telegram fail-closed on empty allowlist
+   - Constant-time REST auth comparison, body size limits, collision-safe filenames
+   - Symlink resolution in path validation and capability broker
+   - PII gate scans system, user, and tool messages (only assistant excluded)
+   - GitHub token pattern (ghp_*) added to PII classifier
+   - Provider selection determinism (sorted keys, skip "example")
+   - SSE parser multi-tool fix (uses actual stream index)
+   - Removed TempDir fallback in skill loading (supply-chain risk)
+   - Corrected false encryption claims in storage/config
+   - Windows interactive command blocklist (date, time, pause)
+   - Provider routing mode validation
+   - web_fetch content-type validation (rejects binary responses)
+
+4. **Documentation (Phase 7d)**
+   - Comprehensive README with architecture diagram
+   - Configuration reference (docs/configuration.md)
+   - Skill development guide (docs/skills.md)
+   - Module status document (docs/status.md)
+   - CLAUDE.md updated with Phase 6-7 details
+   - Build plan updated with current status and corrections
+
+5. **Deferred to future phase**
    - Dockerfile with non-root user, read-only rootfs, no capabilities
-   - systemd unit file with full hardening (NoNewPrivileges, ProtectSystem, etc.)
-   - Security review of all network paths
+   - systemd unit file with full hardening
    - Fuzz testing for input sanitization
 
-4. **Documentation**
-   - README with quick start guide
-   - Configuration reference
-   - Skill development guide
-   - Security model documentation
-   - Architecture decision records
-
-5. **Testing**
-   - Unit tests for all interfaces
-   - Integration tests for provider failover, PII gate, tool dispatch
-   - End-to-end test: message in → tool calls → response out
-
-**Milestone:** Production-ready system with MCP support, container deployment, comprehensive docs.
+**Milestone:** Functional system with MCP support, comprehensive security hardening, full documentation. Container deployment deferred.
 
 ---
 
@@ -1063,14 +1095,27 @@ GoGoClaw is a security-first AI agent framework in Go. Single binary, no CGo.
 
 ---
 
-## Open Items to Resolve
+## Open Items
 
-1. **chromem-go license (RESOLVED):** chromem-go changed from AGPL to MPL-2.0 in v0.7.0. MPL-2.0 is a weak file-level copyleft compatible with Apache 2.0 in combined works. No license conflict — modifications to chromem-go source files must remain MPL, but the rest of GoGoClaw stays Apache 2.0.
+### Resolved
+1. ~~**chromem-go license:**~~ Resolved — changed from AGPL to MPL-2.0 in v0.7.0. Compatible with Apache 2.0.
+2. ~~**Bootstrap template content:**~~ Implemented — bootstrap.md tested with multiple providers, JSON summary extraction works reliably.
 
-2. **Embedding model for cloud-only users:** Users without Ollama need an embedding endpoint. Confirm which cloud providers' embedding APIs to support (OpenAI, MiniMax, etc.) and implement as fallback.
+### Active
+1. **Session isolation refactor:** The engine is a single shared instance across all channels. Per-conversation sessions (separate history, context, overrides) are needed for production multi-user use. Planned for Phase 8.
 
-3. **WASM skill SDK ergonomics:** The developer experience for writing skills needs prototyping. The host function interface (passing data across the WASM boundary) has size and serialization constraints that may need iteration.
+2. **Conversation persistence wiring:** SQLite store exists with full CRUD (conversations, messages, pagination) but is not wired into live message flow. Messages are in-memory only during a session.
 
-4. **Anthropic native provider:** Decide if this is needed for MVP or if LiteLLM / OpenAI-compat shim is sufficient. Anthropic's message format differs enough that features like extended thinking may not work through a shim.
+3. **At-rest encryption implementation:** Config flags exist (`storage.conversations.encrypt`, `logging.audit.encrypt`) but the encryption layer is not implemented. Reserved for future use.
 
-5. **Bootstrap template content:** The actual bootstrap.md conversation script needs to be written and tested with multiple LLM providers to ensure reliable structured data extraction.
+4. **Provider test coverage:** The `internal/provider` package has 0 test files. Integration testing relies on mock providers in engine and channel tests. Unit tests for SSE parsing, request building, and error handling are needed.
+
+5. **Charmbracelet v2 migration:** bubbletea v1.x is in use. The Charm team has announced v2 with breaking API changes. Migration planning should begin before v1 reaches maintenance-only status.
+
+6. **Tiered provider routing:** Config mode `"tiered"` is reserved and validated but not implemented. The planned PolicyRouter would classify task complexity and data sensitivity to route requests: fast local 9B for triage, local 27B for daily agent work, local 120B for privacy-sensitive complex tasks, cloud API for complex non-sensitive tasks.
+
+7. **Embedding model for cloud-only users:** Users without Ollama need a cloud embedding endpoint. The memory system supports fallback_provider config but implementation of cloud embedding APIs is incomplete.
+
+8. **WASM skill SDK ergonomics:** The host function interface works but the developer experience needs a proper SDK package that skills can import, with documentation and examples.
+
+9. **Anthropic native provider:** Currently all providers use the OpenAI-compatible endpoint. A native Anthropic client would support features like extended thinking that don't map cleanly through the OpenAI shim.
