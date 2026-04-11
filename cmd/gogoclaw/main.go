@@ -81,7 +81,10 @@ func main() {
 			templatesDir = "templates"
 		}
 		fmt.Println("Welcome to GoGoClaw! Running first-time setup...")
-		bootstrapSession := engDeps.SessionManager.GetOrCreate("tui", "bootstrap")
+		bootstrapSession, err := engDeps.SessionManager.GetOrCreate(ctx, "tui", "bootstrap")
+		if err != nil {
+			log.Fatalf("bootstrap: create session: %v", err)
+		}
 		bootstrapSender := &bootstrapAdapter{engine: engDeps.Engine, session: bootstrapSession}
 		if err := agent.RunBootstrap(
 			ctx, bootstrapSender, configDir,

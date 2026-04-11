@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,8 +28,12 @@ func newTestStore(t *testing.T) *storage.Store {
 
 func TestSessionManagerGetOrCreate(t *testing.T) {
 	sm := NewSessionManager(nil)
+	ctx := context.Background()
 
-	s1 := sm.GetOrCreate("tui", "conv1")
+	s1, err := sm.GetOrCreate(ctx, "tui", "conv1")
+	if err != nil {
+		t.Fatalf("GetOrCreate error: %v", err)
+	}
 	if s1 == nil {
 		t.Fatal("GetOrCreate returned nil")
 	}
@@ -37,13 +42,19 @@ func TestSessionManagerGetOrCreate(t *testing.T) {
 	}
 
 	// Second call with same key returns same session.
-	s2 := sm.GetOrCreate("tui", "conv1")
+	s2, err := sm.GetOrCreate(ctx, "tui", "conv1")
+	if err != nil {
+		t.Fatalf("GetOrCreate error: %v", err)
+	}
 	if s1 != s2 {
 		t.Error("GetOrCreate returned different session for same key")
 	}
 
 	// Different key returns different session.
-	s3 := sm.GetOrCreate("rest", "conv1")
+	s3, err := sm.GetOrCreate(ctx, "rest", "conv1")
+	if err != nil {
+		t.Fatalf("GetOrCreate error: %v", err)
+	}
 	if s1 == s3 {
 		t.Error("GetOrCreate returned same session for different channel")
 	}
@@ -51,19 +62,27 @@ func TestSessionManagerGetOrCreate(t *testing.T) {
 
 func TestSessionManagerConcurrentGetOrCreate(t *testing.T) {
 	sm := NewSessionManager(nil)
+	ctx := context.Background()
 
 	const goroutines = 100
 	sessions := make([]*Session, goroutines)
+	errs := make([]error, goroutines)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
 	for i := 0; i < goroutines; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			sessions[idx] = sm.GetOrCreate("tui", "shared")
+			sessions[idx], errs[idx] = sm.GetOrCreate(ctx, "tui", "shared")
 		}(i)
 	}
 	wg.Wait()
+
+	for i := 0; i < goroutines; i++ {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d error: %v", i, errs[i])
+		}
+	}
 
 	// All goroutines should have received the same session.
 	for i := 1; i < goroutines; i++ {
@@ -75,8 +94,9 @@ func TestSessionManagerConcurrentGetOrCreate(t *testing.T) {
 
 func TestSessionManagerRemove(t *testing.T) {
 	sm := NewSessionManager(nil)
+	ctx := context.Background()
 
-	sm.GetOrCreate("tui", "conv1")
+	sm.GetOrCreate(ctx, "tui", "conv1")
 	sm.Remove(SessionKey{Channel: "tui", ConversationID: "conv1"})
 
 	if s := sm.Get("tui", "conv1"); s != nil {
@@ -86,9 +106,10 @@ func TestSessionManagerRemove(t *testing.T) {
 
 func TestSessionManagerActiveSessions(t *testing.T) {
 	sm := NewSessionManager(nil)
+	ctx := context.Background()
 
-	sm.GetOrCreate("tui", "conv1")
-	sm.GetOrCreate("rest", "conv2")
+	sm.GetOrCreate(ctx, "tui", "conv1")
+	sm.GetOrCreate(ctx, "rest", "conv2")
 
 	active := sm.ActiveSessions()
 	if len(active) != 2 {
@@ -126,28 +147,68 @@ func TestSessionManagerLoadsFromStore(t *testing.T) {
 	}
 
 	sm := NewSessionManager(store)
-	s := sm.GetOrCreate("tui", "conv1")
+	s, err := sm.GetOrCreate(ctx, "tui", "conv1")
+	if err != nil {
+		t.Fatalf("GetOrCreate error: %v", err)
+	}
 
 	h := s.GetHistory()
 	if len(h) != 3 {
 		t.Fatalf("history length = %d, want 3", len(h))
 	}
 
-	// Verify user message.
 	if h[0].Role != "user" || h[0].Content != "hello" {
 		t.Errorf("h[0] = %+v, want user/hello", h[0])
 	}
-
-	// Verify assistant message with tool calls preserved.
 	if h[1].Role != "assistant" || len(h[1].ToolCalls) != 1 {
 		t.Errorf("h[1] = %+v, want assistant with 1 tool call", h[1])
 	}
 	if h[1].ToolCalls[0].Name != "think" {
 		t.Errorf("h[1].ToolCalls[0].Name = %q, want %q", h[1].ToolCalls[0].Name, "think")
 	}
-
-	// Verify tool message with ToolCallID preserved.
 	if h[2].Role != "tool" || h[2].ToolCallID != "call_1" {
 		t.Errorf("h[2] = %+v, want tool with ToolCallID=call_1", h[2])
 	}
+}
+
+func TestSessionManagerGetOrCreateRespectsContext(t *testing.T) {
+	// A cancelled context should cause GetOrCreate to fail if it needs DB access.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	// With a nil-store SM, no error even with cancelled context.
+	smNoStore := NewSessionManager(nil)
+	s, err := smNoStore.GetOrCreate(ctx, "tui", "test")
+	if err != nil {
+		t.Fatalf("nil-store GetOrCreate should not fail: %v", err)
+	}
+	if s == nil {
+		t.Fatal("nil-store GetOrCreate returned nil session")
+	}
+}
+
+// failingPersistence is a test PersistenceHook that returns errors.
+type failingPersistence struct {
+	failOn string // "user", "assistant", or "tool"
+}
+
+func (f *failingPersistence) OnUserMessage(_ context.Context, _ *Session, _ provider.Message) error {
+	if f.failOn == "user" {
+		return fmt.Errorf("simulated user persistence failure")
+	}
+	return nil
+}
+
+func (f *failingPersistence) OnAssistantMessageComplete(_ context.Context, _ *Session, _ provider.Message) error {
+	if f.failOn == "assistant" {
+		return fmt.Errorf("simulated assistant persistence failure")
+	}
+	return nil
+}
+
+func (f *failingPersistence) OnToolMessage(_ context.Context, _ *Session, _ provider.Message) error {
+	if f.failOn == "tool" {
+		return fmt.Errorf("simulated tool persistence failure")
+	}
+	return nil
 }

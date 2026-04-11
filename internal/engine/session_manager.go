@@ -39,13 +39,14 @@ func NewSessionManager(store *storage.Store) *SessionManager {
 // GetOrCreate returns the existing session for the given key, or creates a
 // new one and loads its history from SQLite. The double-check locking pattern
 // guarantees exactly one Session per key even under concurrent access.
-func (sm *SessionManager) GetOrCreate(channel, convID string) *Session {
+// Returns an error if the database load fails.
+func (sm *SessionManager) GetOrCreate(ctx context.Context, channel, convID string) (*Session, error) {
 	key := SessionKey{Channel: channel, ConversationID: convID}
 
 	sm.mu.RLock()
 	if s, ok := sm.sessions[key]; ok {
 		sm.mu.RUnlock()
-		return s
+		return s, nil
 	}
 	sm.mu.RUnlock()
 
@@ -54,7 +55,7 @@ func (sm *SessionManager) GetOrCreate(channel, convID string) *Session {
 
 	// Double-check after acquiring write lock.
 	if s, ok := sm.sessions[key]; ok {
-		return s
+		return s, nil
 	}
 
 	s := &Session{
@@ -66,15 +67,18 @@ func (sm *SessionManager) GetOrCreate(channel, convID string) *Session {
 
 	// Load history from SQLite if store is available.
 	if sm.store != nil {
-		msgs, err := sm.store.GetMessages(context.Background(), convID)
-		if err == nil && len(msgs) > 0 {
+		msgs, err := sm.store.GetMessages(ctx, convID)
+		if err != nil {
+			return nil, fmt.Errorf("session: load history for %s: %w", convID, err)
+		}
+		if len(msgs) > 0 {
 			s.History = storedToProviderMessages(msgs)
 			sm.knownConversations[convID] = true // already exists in DB
 		}
 	}
 
 	sm.sessions[key] = s
-	return s
+	return s, nil
 }
 
 // Get returns the session for the given key, or nil if not found.

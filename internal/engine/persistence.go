@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"fmt"
 	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -16,18 +16,18 @@ import (
 var _ PersistenceHook = (*SessionManager)(nil)
 
 // OnUserMessage persists a user message to SQLite.
-func (sm *SessionManager) OnUserMessage(ctx context.Context, session *Session, msg provider.Message) {
-	sm.persistMessage(ctx, session, msg)
+func (sm *SessionManager) OnUserMessage(ctx context.Context, session *Session, msg provider.Message) error {
+	return sm.persistMessage(ctx, session, msg)
 }
 
 // OnAssistantMessageComplete persists a completed assistant message to SQLite.
-func (sm *SessionManager) OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message) {
-	sm.persistMessage(ctx, session, msg)
+func (sm *SessionManager) OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message) error {
+	return sm.persistMessage(ctx, session, msg)
 }
 
 // OnToolMessage persists a tool result message to SQLite.
-func (sm *SessionManager) OnToolMessage(ctx context.Context, session *Session, msg provider.Message) {
-	sm.persistMessage(ctx, session, msg)
+func (sm *SessionManager) OnToolMessage(ctx context.Context, session *Session, msg provider.Message) error {
+	return sm.persistMessage(ctx, session, msg)
 }
 
 // generateMessageID returns a random hex string suitable for use as a
@@ -40,9 +40,9 @@ func generateMessageID() string {
 	return hex.EncodeToString(b)
 }
 
-func (sm *SessionManager) persistMessage(ctx context.Context, session *Session, msg provider.Message) {
+func (sm *SessionManager) persistMessage(ctx context.Context, session *Session, msg provider.Message) error {
 	if sm.store == nil {
-		return
+		return nil
 	}
 
 	stored := storage.StoredMessage{
@@ -60,31 +60,32 @@ func (sm *SessionManager) persistMessage(ctx context.Context, session *Session, 
 		}
 	}
 
-	// Ensure the conversation exists before adding messages.
-	sm.ensureConversation(ctx, session)
+	if err := sm.ensureConversation(ctx, session); err != nil {
+		return fmt.Errorf("persistence: ensure conversation %s: %w", session.ConversationID, err)
+	}
 
 	if err := sm.store.AddMessage(ctx, stored); err != nil {
-		log.Printf("persistence: failed to write %s message for conversation %s: %v",
+		return fmt.Errorf("persistence: write %s message for conversation %s: %w",
 			msg.Role, session.ConversationID, err)
 	}
+	return nil
 }
 
-func (sm *SessionManager) ensureConversation(ctx context.Context, session *Session) {
+func (sm *SessionManager) ensureConversation(ctx context.Context, session *Session) error {
 	if sm.store == nil {
-		return
+		return nil
 	}
 
 	sm.mu.RLock()
 	known := sm.knownConversations[session.ConversationID]
 	sm.mu.RUnlock()
 	if known {
-		return
+		return nil
 	}
 
 	existing, err := sm.store.GetConversation(ctx, session.ConversationID)
 	if err != nil {
-		log.Printf("persistence: failed to check conversation %s: %v", session.ConversationID, err)
-		return
+		return fmt.Errorf("check existence: %w", err)
 	}
 
 	if existing == nil {
@@ -96,12 +97,12 @@ func (sm *SessionManager) ensureConversation(ctx context.Context, session *Sessi
 			CreatedAt: now,
 			UpdatedAt: now,
 		}); err != nil {
-			log.Printf("persistence: failed to create conversation %s: %v", session.ConversationID, err)
-			return
+			return fmt.Errorf("create: %w", err)
 		}
 	}
 
 	sm.mu.Lock()
 	sm.knownConversations[session.ConversationID] = true
 	sm.mu.Unlock()
+	return nil
 }

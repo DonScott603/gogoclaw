@@ -349,7 +349,11 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		filePrefix = "[Files uploaded: " + strings.Join(parts, ", ") + "] You can read them with file_read using paths relative to the workspace. "
 	}
 
-	session := rc.sessionManager.GetOrCreate("rest", req.ConversationID)
+	session, err := rc.sessionManager.GetOrCreate(r.Context(), "rest", req.ConversationID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: session: " + err.Error()})
+		return
+	}
 	prompt := "[Channel: REST API] " + filePrefix + req.Text
 	resp, err := rc.engine.Send(r.Context(), session, prompt)
 	if err != nil {

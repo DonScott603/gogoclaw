@@ -30,10 +30,11 @@ func (NoOpSummarizer) MaybeSummarize(context.Context, []provider.Message, string
 
 // PersistenceHook is called by the Engine at the right moments to persist
 // messages. SessionManager implements this interface; Engine controls timing.
+// Errors are propagated to callers so persistence failures are visible.
 type PersistenceHook interface {
-	OnUserMessage(ctx context.Context, session *Session, msg provider.Message)
-	OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message)
-	OnToolMessage(ctx context.Context, session *Session, msg provider.Message)
+	OnUserMessage(ctx context.Context, session *Session, msg provider.Message) error
+	OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message) error
+	OnToolMessage(ctx context.Context, session *Session, msg provider.Message) error
 }
 
 // Engine is the core agent orchestrator. It is a stateless executor that
@@ -86,7 +87,9 @@ func (e *Engine) Send(ctx context.Context, session *Session, userMessage string)
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	session.AppendMessage(userMsg)
 	if e.persistence != nil {
-		e.persistence.OnUserMessage(ctx, session, userMsg)
+		if err := e.persistence.OnUserMessage(ctx, session, userMsg); err != nil {
+			return "", fmt.Errorf("engine: persist user message: %w", err)
+		}
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -100,7 +103,9 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	session.AppendMessage(userMsg)
 	if e.persistence != nil {
-		e.persistence.OnUserMessage(ctx, session, userMsg)
+		if err := e.persistence.OnUserMessage(ctx, session, userMsg); err != nil {
+			return nil, fmt.Errorf("engine: persist user message: %w", err)
+		}
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -136,7 +141,10 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
+				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
+					out <- provider.StreamChunk{Error: fmt.Errorf("engine: persist assistant message: %w", err), Done: true}
+					return
+				}
 			}
 
 			if err := e.dispatchToolCalls(ctx, session, toolCalls); err != nil {
@@ -155,7 +163,10 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			assistantMsg := provider.Message{Role: "assistant", Content: fullContent}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
+				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
+					out <- provider.StreamChunk{Error: fmt.Errorf("engine: persist assistant message: %w", err), Done: true}
+					return
+				}
 			}
 		}
 	}()
@@ -234,7 +245,9 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, session *Session, toolCa
 		}
 		session.AppendMessage(toolMsg)
 		if e.persistence != nil {
-			e.persistence.OnToolMessage(ctx, session, toolMsg)
+			if err := e.persistence.OnToolMessage(ctx, session, toolMsg); err != nil {
+				return fmt.Errorf("engine: persist tool message: %w", err)
+			}
 		}
 	}
 
@@ -258,7 +271,9 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 			assistantMsg := provider.Message{Role: "assistant", Content: resp.Content}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
+				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
+					return "", fmt.Errorf("engine: persist assistant message: %w", err)
+				}
 			}
 			return resp.Content, nil
 		}
@@ -270,7 +285,9 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 		}
 		session.AppendMessage(assistantMsg)
 		if e.persistence != nil {
-			e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
+			if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
+				return "", fmt.Errorf("engine: persist assistant message: %w", err)
+			}
 		}
 
 		if err := e.dispatchToolCalls(ctx, session, resp.ToolCalls); err != nil {

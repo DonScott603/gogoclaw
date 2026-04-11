@@ -151,7 +151,10 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
-	session := tc.sessionManager.GetOrCreate("telegram", convID)
+	session, err := tc.sessionManager.GetOrCreate(tc.ctx, "telegram", convID)
+	if err != nil {
+		return c.Send("Error loading session: " + err.Error())
+	}
 
 	tc.notifyHandler(convID, c.Text(), c.Sender())
 
@@ -190,7 +193,10 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
-	session := tc.sessionManager.GetOrCreate("telegram", convID)
+	session, err := tc.sessionManager.GetOrCreate(tc.ctx, "telegram", convID)
+	if err != nil {
+		return c.Send("Error loading session: " + err.Error())
+	}
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text
@@ -229,7 +235,10 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
-	session := tc.sessionManager.GetOrCreate("telegram", convID)
+	session, err := tc.sessionManager.GetOrCreate(tc.ctx, "telegram", convID)
+	if err != nil {
+		return c.Send("Error loading session: " + err.Error())
+	}
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text

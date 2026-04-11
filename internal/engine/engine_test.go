@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -185,5 +186,118 @@ func TestEngineIsolatedSessions(t *testing.T) {
 	}
 	if h2[0].Content != "message for conv2" {
 		t.Errorf("s2 first message = %q, want %q", h2[0].Content, "message for conv2")
+	}
+}
+
+func TestEngineSendUserPersistenceFailure(t *testing.T) {
+	mock := &mockProvider{name: "mock", response: "reply"}
+	eng := New(Config{
+		Provider:    mock,
+		MaxContext:  8192,
+		Persistence: &failingPersistence{failOn: "user"},
+	})
+	session := newTestSession("tui", "test")
+
+	_, err := eng.Send(context.Background(), session, "Hi")
+	if err == nil {
+		t.Fatal("Send() should return error when user persistence fails")
+	}
+	if !strings.Contains(err.Error(), "persist user message") {
+		t.Errorf("error = %q, want to contain 'persist user message'", err.Error())
+	}
+}
+
+func TestEngineSendAssistantPersistenceFailure(t *testing.T) {
+	mock := &mockProvider{name: "mock", response: "reply"}
+	eng := New(Config{
+		Provider:    mock,
+		MaxContext:  8192,
+		Persistence: &failingPersistence{failOn: "assistant"},
+	})
+	session := newTestSession("tui", "test")
+
+	_, err := eng.Send(context.Background(), session, "Hi")
+	if err == nil {
+		t.Fatal("Send() should return error when assistant persistence fails")
+	}
+	if !strings.Contains(err.Error(), "persist assistant message") {
+		t.Errorf("error = %q, want to contain 'persist assistant message'", err.Error())
+	}
+}
+
+func TestEngineSendToolPersistenceFailure(t *testing.T) {
+	mock := &mockProvider{
+		name:     "mock",
+		response: "Final.",
+		toolCalls: []provider.ToolCall{
+			{ID: "call_1", Name: "think", Arguments: json.RawMessage(`{}`)},
+		},
+	}
+	d := tools.NewDispatcher(0)
+	d.Register(tools.ToolDef{
+		Name: "think", Description: "test", Parameters: json.RawMessage(`{}`),
+		Fn: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	eng := New(Config{
+		Provider:    mock,
+		Dispatcher:  d,
+		MaxContext:  8192,
+		Persistence: &failingPersistence{failOn: "tool"},
+	})
+	session := newTestSession("tui", "test")
+
+	_, err := eng.Send(context.Background(), session, "use tool")
+	if err == nil {
+		t.Fatal("Send() should return error when tool persistence fails")
+	}
+	if !strings.Contains(err.Error(), "persist tool message") {
+		t.Errorf("error = %q, want to contain 'persist tool message'", err.Error())
+	}
+}
+
+func TestEngineSendStreamUserPersistenceFailure(t *testing.T) {
+	mock := &mockProvider{name: "mock", response: "reply"}
+	eng := New(Config{
+		Provider:    mock,
+		MaxContext:  8192,
+		Persistence: &failingPersistence{failOn: "user"},
+	})
+	session := newTestSession("tui", "test")
+
+	_, err := eng.SendStream(context.Background(), session, "Hi")
+	if err == nil {
+		t.Fatal("SendStream() should return error when user persistence fails before streaming")
+	}
+	if !strings.Contains(err.Error(), "persist user message") {
+		t.Errorf("error = %q, want to contain 'persist user message'", err.Error())
+	}
+}
+
+func TestEngineSendStreamAssistantPersistenceFailure(t *testing.T) {
+	mock := &mockProvider{name: "mock", response: "reply"}
+	eng := New(Config{
+		Provider:    mock,
+		MaxContext:  8192,
+		Persistence: &failingPersistence{failOn: "assistant"},
+	})
+	session := newTestSession("tui", "test")
+
+	ch, err := eng.SendStream(context.Background(), session, "Hi")
+	if err != nil {
+		t.Fatalf("SendStream() should not fail upfront: %v", err)
+	}
+
+	var lastChunk provider.StreamChunk
+	for chunk := range ch {
+		lastChunk = chunk
+	}
+	if lastChunk.Error == nil {
+		t.Fatal("expected terminal error chunk when assistant persistence fails after streaming")
+	}
+	if !strings.Contains(lastChunk.Error.Error(), "persist assistant message") {
+		t.Errorf("error = %q, want to contain 'persist assistant message'", lastChunk.Error.Error())
 	}
 }

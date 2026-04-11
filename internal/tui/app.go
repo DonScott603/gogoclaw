@@ -200,10 +200,18 @@ func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionMan
 			}
 		}
 		entries = []conversationEntry{{id: newID, title: "New Conversation"}}
-		session = sm.GetOrCreate("tui", newID)
+		s, err := sm.GetOrCreate(ctx, "tui", newID)
+		if err != nil {
+			log.Printf("tui: load initial session: %v", err)
+		}
+		session = s
 	} else {
 		// Use the most recent conversation.
-		session = sm.GetOrCreate("tui", entries[0].id)
+		s, err := sm.GetOrCreate(ctx, "tui", entries[0].id)
+		if err != nil {
+			log.Printf("tui: load session for %s: %v", entries[0].id, err)
+		}
+		session = s
 	}
 
 	return model{
@@ -307,7 +315,12 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.conversations = append(m.conversations, conversationEntry{id: newID, title: "New Conversation"})
 		m.activeConvoIdx = len(m.conversations) - 1
-		m.currentSession = m.sessionManager.GetOrCreate("tui", newID)
+		s, err := m.sessionManager.GetOrCreate(m.ctx, "tui", newID)
+		if err != nil {
+			log.Printf("tui: create session: %v", err)
+		} else {
+			m.currentSession = s
+		}
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
@@ -317,15 +330,20 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			if m.activeConvoIdx < len(m.conversations) {
 				selectedID := m.conversations[m.activeConvoIdx].id
-				m.currentSession = m.sessionManager.GetOrCreate("tui", selectedID)
-				// Rebuild display messages from session history.
-				h := m.currentSession.GetHistory()
-				m.messages = nil
-				for _, msg := range h {
-					if msg.Role == "system" {
-						continue
+				s, err := m.sessionManager.GetOrCreate(m.ctx, "tui", selectedID)
+				if err != nil {
+					log.Printf("tui: switch session %s: %v", selectedID, err)
+				} else {
+					m.currentSession = s
+					// Rebuild display messages from session history.
+					h := m.currentSession.GetHistory()
+					m.messages = nil
+					for _, msg := range h {
+						if msg.Role == "system" {
+							continue
+						}
+						m.messages = append(m.messages, chatMessage{role: msg.Role, content: msg.Content})
 					}
-					m.messages = append(m.messages, chatMessage{role: msg.Role, content: msg.Content})
 				}
 			}
 			m.activePanel = panelChat
