@@ -60,45 +60,34 @@ func (sm *SessionManager) persistMessage(ctx context.Context, session *Session, 
 		}
 	}
 
-	if err := sm.ensureConversation(ctx, session); err != nil {
-		return fmt.Errorf("persistence: ensure conversation %s: %w", session.ConversationID, err)
-	}
-
-	if err := sm.store.AddMessage(ctx, stored); err != nil {
-		return fmt.Errorf("persistence: write %s message for conversation %s: %w",
-			msg.Role, session.ConversationID, err)
-	}
-	return nil
-}
-
-func (sm *SessionManager) ensureConversation(ctx context.Context, session *Session) error {
-	if sm.store == nil {
-		return nil
-	}
-
+	// Check if the conversation is already known to exist in SQLite.
 	sm.mu.RLock()
 	known := sm.knownConversations[session.ConversationID]
 	sm.mu.RUnlock()
+
 	if known {
+		// Fast path: conversation already exists, just insert the message.
+		if err := sm.store.AddMessage(ctx, stored); err != nil {
+			return fmt.Errorf("persistence: write %s message for conversation %s: %w",
+				msg.Role, session.ConversationID, err)
+		}
 		return nil
 	}
 
-	existing, err := sm.store.GetConversation(ctx, session.ConversationID)
-	if err != nil {
-		return fmt.Errorf("check existence: %w", err)
+	// Slow path: conversation may not exist yet. Use the transactional method
+	// to atomically ensure the conversation exists and insert the message.
+	now := time.Now()
+	conv := storage.Conversation{
+		ID:        session.ConversationID,
+		Title:     "Conversation",
+		Agent:     session.AgentProfile,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
-	if existing == nil {
-		now := time.Now()
-		if err := sm.store.CreateConversation(ctx, storage.Conversation{
-			ID:        session.ConversationID,
-			Title:     "Conversation",
-			Agent:     session.AgentProfile,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}); err != nil {
-			return fmt.Errorf("create: %w", err)
-		}
+	if err := sm.store.EnsureConversationAndAddMessage(ctx, conv, stored); err != nil {
+		return fmt.Errorf("persistence: write %s message for conversation %s: %w",
+			msg.Role, session.ConversationID, err)
 	}
 
 	sm.mu.Lock()

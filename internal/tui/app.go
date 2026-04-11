@@ -300,9 +300,6 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.startStream(text)
 
 	case tea.KeyCtrlN:
-		m.messages = nil
-		m.streamBuf = ""
-		m.streaming = false
 		newID := generateConversationID()
 		if m.store != nil {
 			now := time.Now()
@@ -311,16 +308,21 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				CreatedAt: now, UpdatedAt: now,
 			}); err != nil {
 				log.Printf("tui: create conversation: %v", err)
+				return m, nil // preserve current state
 			}
 		}
-		m.conversations = append(m.conversations, conversationEntry{id: newID, title: "New Conversation"})
-		m.activeConvoIdx = len(m.conversations) - 1
 		s, err := m.sessionManager.GetOrCreate(m.ctx, "tui", newID)
 		if err != nil {
 			log.Printf("tui: create session: %v", err)
-		} else {
-			m.currentSession = s
+			return m, nil // preserve current state
 		}
+		// Only mutate model state after both operations succeed.
+		m.messages = nil
+		m.streamBuf = ""
+		m.streaming = false
+		m.conversations = append(m.conversations, conversationEntry{id: newID, title: "New Conversation"})
+		m.activeConvoIdx = len(m.conversations) - 1
+		m.currentSession = s
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 

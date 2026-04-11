@@ -189,7 +189,7 @@ func TestEngineIsolatedSessions(t *testing.T) {
 	}
 }
 
-func TestEngineSendUserPersistenceFailure(t *testing.T) {
+func TestEngineSendUserPersistenceFailureNoAppend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
 	eng := New(Config{
 		Provider:    mock,
@@ -205,9 +205,14 @@ func TestEngineSendUserPersistenceFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "persist user message") {
 		t.Errorf("error = %q, want to contain 'persist user message'", err.Error())
 	}
+	// Session must NOT contain the user message.
+	h := session.GetHistory()
+	if len(h) != 0 {
+		t.Errorf("session history length = %d, want 0 (user message should not be appended on failure)", len(h))
+	}
 }
 
-func TestEngineSendAssistantPersistenceFailure(t *testing.T) {
+func TestEngineSendAssistantPersistenceFailureNoAppend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
 	eng := New(Config{
 		Provider:    mock,
@@ -223,9 +228,17 @@ func TestEngineSendAssistantPersistenceFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "persist assistant message") {
 		t.Errorf("error = %q, want to contain 'persist assistant message'", err.Error())
 	}
+	// Session should contain the user message (persisted OK) but NOT the assistant.
+	h := session.GetHistory()
+	if len(h) != 1 {
+		t.Errorf("session history length = %d, want 1 (only user msg)", len(h))
+	}
+	if len(h) > 0 && h[0].Role != "user" {
+		t.Errorf("h[0].Role = %q, want user", h[0].Role)
+	}
 }
 
-func TestEngineSendToolPersistenceFailure(t *testing.T) {
+func TestEngineSendToolPersistenceFailureNoAppend(t *testing.T) {
 	mock := &mockProvider{
 		name:     "mock",
 		response: "Final.",
@@ -256,9 +269,17 @@ func TestEngineSendToolPersistenceFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "persist tool message") {
 		t.Errorf("error = %q, want to contain 'persist tool message'", err.Error())
 	}
+	// Session should have user + assistant(toolcall) but NOT the tool result.
+	h := session.GetHistory()
+	if len(h) != 2 {
+		t.Errorf("session history length = %d, want 2 (user + assistant with toolcall)", len(h))
+		for i, m := range h {
+			t.Logf("  [%d] role=%s", i, m.Role)
+		}
+	}
 }
 
-func TestEngineSendStreamUserPersistenceFailure(t *testing.T) {
+func TestEngineSendStreamUserPersistenceFailureNoAppend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
 	eng := New(Config{
 		Provider:    mock,
@@ -274,9 +295,14 @@ func TestEngineSendStreamUserPersistenceFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "persist user message") {
 		t.Errorf("error = %q, want to contain 'persist user message'", err.Error())
 	}
+	// Session must NOT contain the user message.
+	h := session.GetHistory()
+	if len(h) != 0 {
+		t.Errorf("session history length = %d, want 0", len(h))
+	}
 }
 
-func TestEngineSendStreamAssistantPersistenceFailure(t *testing.T) {
+func TestEngineSendStreamAssistantPersistenceFailureNoAppend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
 	eng := New(Config{
 		Provider:    mock,
@@ -299,5 +325,13 @@ func TestEngineSendStreamAssistantPersistenceFailure(t *testing.T) {
 	}
 	if !strings.Contains(lastChunk.Error.Error(), "persist assistant message") {
 		t.Errorf("error = %q, want to contain 'persist assistant message'", lastChunk.Error.Error())
+	}
+	// Session should have user message but NOT the assistant.
+	h := session.GetHistory()
+	if len(h) != 1 {
+		t.Errorf("session history length = %d, want 1 (only user msg)", len(h))
+	}
+	if len(h) > 0 && h[0].Role != "user" {
+		t.Errorf("h[0].Role = %q, want user", h[0].Role)
 	}
 }

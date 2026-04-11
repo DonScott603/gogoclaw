@@ -81,15 +81,48 @@ func (e *Engine) Assembler() *ContextAssembler {
 	return e.assembler
 }
 
+// persistAndAppendUser persists a user message first, then appends to session
+// only on success. This prevents session/SQLite divergence.
+func (e *Engine) persistAndAppendUser(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnUserMessage(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist user message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
+// persistAndAppendAssistant persists an assistant message first, then appends
+// to session only on success.
+func (e *Engine) persistAndAppendAssistant(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnAssistantMessageComplete(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist assistant message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
+// persistAndAppendTool persists a tool message first, then appends to session
+// only on success.
+func (e *Engine) persistAndAppendTool(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnToolMessage(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist tool message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
 // Send sends a user message, handles any tool call loops, and returns the
 // final assistant text response (non-streaming).
 func (e *Engine) Send(ctx context.Context, session *Session, userMessage string) (string, error) {
 	userMsg := provider.Message{Role: "user", Content: userMessage}
-	session.AppendMessage(userMsg)
-	if e.persistence != nil {
-		if err := e.persistence.OnUserMessage(ctx, session, userMsg); err != nil {
-			return "", fmt.Errorf("engine: persist user message: %w", err)
-		}
+	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
+		return "", err
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -101,11 +134,8 @@ func (e *Engine) Send(ctx context.Context, session *Session, userMessage string)
 // to non-streaming mode for the tool loop and returns the final text on the channel.
 func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage string) (<-chan provider.StreamChunk, error) {
 	userMsg := provider.Message{Role: "user", Content: userMessage}
-	session.AppendMessage(userMsg)
-	if e.persistence != nil {
-		if err := e.persistence.OnUserMessage(ctx, session, userMsg); err != nil {
-			return nil, fmt.Errorf("engine: persist user message: %w", err)
-		}
+	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
+		return nil, err
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -139,12 +169,9 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 				Content:   fullContent,
 				ToolCalls: toolCalls,
 			}
-			session.AppendMessage(assistantMsg)
-			if e.persistence != nil {
-				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
-					out <- provider.StreamChunk{Error: fmt.Errorf("engine: persist assistant message: %w", err), Done: true}
-					return
-				}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+				out <- provider.StreamChunk{Error: err, Done: true}
+				return
 			}
 
 			if err := e.dispatchToolCalls(ctx, session, toolCalls); err != nil {
@@ -152,7 +179,6 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 				return
 			}
 
-			// Continue with non-streaming tool loop.
 			finalText, err := e.runToolLoop(ctx, session)
 			if err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
@@ -161,12 +187,9 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			out <- provider.StreamChunk{Content: "\n" + finalText}
 		} else {
 			assistantMsg := provider.Message{Role: "assistant", Content: fullContent}
-			session.AppendMessage(assistantMsg)
-			if e.persistence != nil {
-				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
-					out <- provider.StreamChunk{Error: fmt.Errorf("engine: persist assistant message: %w", err), Done: true}
-					return
-				}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+				out <- provider.StreamChunk{Error: err, Done: true}
+				return
 			}
 		}
 	}()
@@ -243,11 +266,8 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, session *Session, toolCa
 			Content:    r.Content,
 			ToolCallID: r.CallID,
 		}
-		session.AppendMessage(toolMsg)
-		if e.persistence != nil {
-			if err := e.persistence.OnToolMessage(ctx, session, toolMsg); err != nil {
-				return fmt.Errorf("engine: persist tool message: %w", err)
-			}
+		if err := e.persistAndAppendTool(ctx, session, toolMsg); err != nil {
+			return err
 		}
 	}
 
@@ -255,8 +275,7 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, session *Session, toolCa
 }
 
 // runToolLoop calls the provider in a loop, dispatching any tool calls, until
-// a final text response is produced or maxToolRounds is exceeded. Both Send
-// and SendStream delegate to this after appending the user message to history.
+// a final text response is produced or maxToolRounds is exceeded.
 func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, error) {
 	for round := 0; round < maxToolRounds; round++ {
 		messages := e.buildMessages(session)
@@ -269,11 +288,8 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 
 		if len(resp.ToolCalls) == 0 {
 			assistantMsg := provider.Message{Role: "assistant", Content: resp.Content}
-			session.AppendMessage(assistantMsg)
-			if e.persistence != nil {
-				if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
-					return "", fmt.Errorf("engine: persist assistant message: %w", err)
-				}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+				return "", err
 			}
 			return resp.Content, nil
 		}
@@ -283,11 +299,8 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
 		}
-		session.AppendMessage(assistantMsg)
-		if e.persistence != nil {
-			if err := e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg); err != nil {
-				return "", fmt.Errorf("engine: persist assistant message: %w", err)
-			}
+		if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+			return "", err
 		}
 
 		if err := e.dispatchToolCalls(ctx, session, resp.ToolCalls); err != nil {

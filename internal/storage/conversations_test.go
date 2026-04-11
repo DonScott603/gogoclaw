@@ -149,6 +149,94 @@ func TestMessageCount(t *testing.T) {
 	}
 }
 
+func TestEnsureConversationAndAddMessage(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	conv := Conversation{
+		ID: "conv-tx", Title: "TX Test", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	msg := StoredMessage{
+		ID: "msg-tx-1", ConversationID: "conv-tx", Role: "user",
+		Content: "hello", CreatedAt: now,
+	}
+
+	// First call should create conversation and insert message atomically.
+	if err := store.EnsureConversationAndAddMessage(ctx, conv, msg); err != nil {
+		t.Fatalf("EnsureConversationAndAddMessage: %v", err)
+	}
+
+	// Verify conversation exists.
+	got, err := store.GetConversation(ctx, "conv-tx")
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if got == nil {
+		t.Fatal("conversation should exist after transactional create")
+	}
+
+	// Verify message exists.
+	msgs, err := store.GetMessages(ctx, "conv-tx")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "hello" {
+		t.Errorf("expected 1 message with content 'hello', got %d", len(msgs))
+	}
+
+	// Second call with same conv ID should just add message (no duplicate conv error).
+	msg2 := StoredMessage{
+		ID: "msg-tx-2", ConversationID: "conv-tx", Role: "assistant",
+		Content: "hi back", CreatedAt: now.Add(time.Second),
+	}
+	if err := store.EnsureConversationAndAddMessage(ctx, conv, msg2); err != nil {
+		t.Fatalf("second EnsureConversationAndAddMessage: %v", err)
+	}
+
+	msgs, _ = store.GetMessages(ctx, "conv-tx")
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages after second call, got %d", len(msgs))
+	}
+}
+
+func TestEnsureConversationAndAddMessageRollback(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	conv := Conversation{
+		ID: "conv-rb", Title: "Rollback Test", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	}
+
+	// Insert a message with a duplicate ID to force failure on the second call.
+	store.EnsureConversationAndAddMessage(ctx, conv, StoredMessage{
+		ID: "dup-id", ConversationID: "conv-rb", Role: "user",
+		Content: "first", CreatedAt: now,
+	})
+
+	// New conversation + duplicate message ID should fail.
+	conv2 := Conversation{
+		ID: "conv-rb-2", Title: "Should Not Exist", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	err := store.EnsureConversationAndAddMessage(ctx, conv2, StoredMessage{
+		ID: "dup-id", ConversationID: "conv-rb-2", Role: "user",
+		Content: "second", CreatedAt: now,
+	})
+	if err == nil {
+		t.Fatal("expected error from duplicate message ID")
+	}
+
+	// The new conversation should NOT have been created (rolled back).
+	got, _ := store.GetConversation(ctx, "conv-rb-2")
+	if got != nil {
+		t.Error("conversation conv-rb-2 should not exist after rollback")
+	}
+}
+
 func TestDeleteConversation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
