@@ -275,8 +275,11 @@ func (s *Store) EnsureConversationAndAddMessage(ctx context.Context, conv Conver
 	}
 
 	// Touch conversation updated_at.
-	tx.ExecContext(ctx,
-		`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, m.ConversationID)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, m.ConversationID,
+	); err != nil {
+		return fmt.Errorf("storage: update conversation timestamp: %w", err)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit tx: %w", err)

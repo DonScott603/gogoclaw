@@ -188,6 +188,7 @@ func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionMan
 
 	// If no existing conversations, create a new one.
 	var session *engine.Session
+	var startupErr error
 	if len(entries) == 0 {
 		newID := generateConversationID()
 		if store != nil {
@@ -196,25 +197,30 @@ func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionMan
 				ID: newID, Title: "New Conversation", Agent: "base",
 				CreatedAt: now, UpdatedAt: now,
 			}); err != nil {
-				log.Printf("tui: create initial conversation: %v", err)
+				startupErr = fmt.Errorf("failed to create initial conversation: %w", err)
+				log.Printf("tui: %v", startupErr)
 			}
 		}
 		entries = []conversationEntry{{id: newID, title: "New Conversation"}}
-		s, err := sm.GetOrCreate(ctx, "tui", newID)
-		if err != nil {
-			log.Printf("tui: load initial session: %v", err)
+		if startupErr == nil {
+			s, err := sm.GetOrCreate(ctx, "tui", newID)
+			if err != nil {
+				startupErr = fmt.Errorf("failed to load initial session: %w", err)
+				log.Printf("tui: %v", startupErr)
+			}
+			session = s
 		}
-		session = s
 	} else {
 		// Use the most recent conversation.
 		s, err := sm.GetOrCreate(ctx, "tui", entries[0].id)
 		if err != nil {
-			log.Printf("tui: load session for %s: %v", entries[0].id, err)
+			startupErr = fmt.Errorf("failed to load session: %w", err)
+			log.Printf("tui: %v", startupErr)
 		}
 		session = s
 	}
 
-	return model{
+	m := model{
 		ctx:            ctx,
 		engine:         eng,
 		sessionManager: sm,
@@ -223,7 +229,17 @@ func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionMan
 		viewport:       vp,
 		textarea:       ta,
 		conversations:  entries,
+		err:            startupErr,
 	}
+
+	if startupErr != nil {
+		vp.SetContent("GoGoClaw started in degraded mode — session could not be loaded.\n" +
+			"Press Ctrl+N to create a new conversation, or Esc to quit.\n\n" +
+			"Error: " + startupErr.Error() + "\n")
+		m.viewport = vp
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -284,6 +300,10 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlS:
 		if m.streaming {
+			return m, nil
+		}
+		if m.currentSession == nil {
+			m.err = fmt.Errorf("no active session — press Ctrl+N to create one")
 			return m, nil
 		}
 		text := strings.TrimSpace(m.textarea.Value())

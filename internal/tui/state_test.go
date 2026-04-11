@@ -198,3 +198,101 @@ func TestTUICtrlNSuccessCreatesStoreConversation(t *testing.T) {
 
 	_ = fmt.Sprintf("placeholder") // keep fmt imported
 }
+
+func TestTUIStartupFailureSetsError(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	eng := engine.New(engine.Config{
+		Provider:   &stubProvider{},
+		MaxContext: 4096,
+	})
+	sm := engine.NewSessionManager(store)
+
+	// Close the store before startup so session creation fails.
+	store.Close()
+
+	m := initialModel(ctx, eng, sm, store)
+
+	// currentSession should be nil.
+	if m.currentSession != nil {
+		t.Error("currentSession should be nil after startup failure")
+	}
+
+	// err should be set.
+	if m.err == nil {
+		t.Fatal("m.err should be set after startup failure")
+	}
+}
+
+func TestTUIStartupFailureSendIsSafe(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	eng := engine.New(engine.Config{
+		Provider:   &stubProvider{},
+		MaxContext: 4096,
+	})
+	sm := engine.NewSessionManager(store)
+
+	store.Close()
+	m := initialModel(ctx, eng, sm, store)
+
+	// Typing and pressing Ctrl+S should not panic with nil session.
+	m.textarea.SetValue("hello")
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated := result.(model)
+
+	if updated.err == nil {
+		t.Error("expected error on send without session")
+	}
+	// Message should NOT have been added to display (no session to send to).
+	if len(updated.messages) != 0 {
+		t.Errorf("messages count = %d, want 0", len(updated.messages))
+	}
+}
+
+func TestTUIStartupFailureCtrlNRecovers(t *testing.T) {
+	// Use a separate store for the "recovery" path since the original
+	// store is closed to trigger startup failure.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "startup.db")
+	store, err := storage.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	ctx := context.Background()
+	eng := engine.New(engine.Config{
+		Provider:   &stubProvider{},
+		MaxContext: 4096,
+	})
+	sm := engine.NewSessionManager(store)
+
+	// Close and reopen: close to trigger startup failure, then reopen for recovery.
+	store.Close()
+	m := initialModel(ctx, eng, sm, store)
+	if m.currentSession != nil {
+		t.Error("expected nil session after startup failure")
+	}
+
+	// Reopen a fresh store for recovery.
+	store2, err := storage.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore reopen: %v", err)
+	}
+	t.Cleanup(func() { store2.Close() })
+
+	// Replace the model's store and session manager with working ones.
+	m.store = store2
+	m.sessionManager = engine.NewSessionManager(store2)
+
+	// Ctrl+N should recover.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	updated := result.(model)
+
+	if updated.currentSession == nil {
+		t.Error("currentSession should be non-nil after Ctrl+N recovery")
+	}
+	if len(updated.conversations) == 0 {
+		t.Error("conversations should not be empty after Ctrl+N")
+	}
+}
