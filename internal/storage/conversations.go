@@ -80,33 +80,7 @@ func (s *Store) SetScrubber(scrubber Scrubber, onScrub ScrubNotifyFn) {
 }
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS conversations (
-			id         TEXT PRIMARY KEY,
-			title      TEXT NOT NULL DEFAULT '',
-			agent      TEXT NOT NULL DEFAULT 'base',
-			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
-
-		CREATE TABLE IF NOT EXISTS messages (
-			id              TEXT PRIMARY KEY,
-			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-			role            TEXT NOT NULL,
-			content         TEXT NOT NULL DEFAULT '',
-			tool_calls      TEXT,
-			tool_call_id    TEXT DEFAULT '',
-			token_count     INTEGER NOT NULL DEFAULT 0,
-			created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_messages_conversation
-			ON messages(conversation_id, created_at);
-	`)
-	if err != nil {
-		return fmt.Errorf("storage: migrate: %w", err)
-	}
-	return nil
+	return s.runMigrations()
 }
 
 // CreateConversation inserts a new conversation.
@@ -250,6 +224,67 @@ func (s *Store) GetMessages(ctx context.Context, conversationID string) ([]Store
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// EnsureConversationAndAddMessage atomically ensures the conversation exists
+// and inserts a message within a single transaction. If the conversation
+// already exists, only the message is inserted. If either step fails the
+// entire transaction is rolled back.
+func (s *Store) EnsureConversationAndAddMessage(ctx context.Context, conv Conversation, m StoredMessage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check if conversation already exists.
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM conversations WHERE id = ?`, conv.ID,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("storage: check conversation: %w", err)
+	}
+
+	if exists == 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO conversations (id, title, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			conv.ID, conv.Title, conv.Agent, conv.CreatedAt, conv.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("storage: create conversation: %w", err)
+		}
+	}
+
+	// Scrub secrets before persisting.
+	if s.scrubber != nil && s.scrubber.HasSecrets(m.Content) {
+		m.Content = s.scrubber.Scrub(m.Content)
+		if s.onScrub != nil {
+			s.onScrub("storage", "secrets scrubbed before SQLite persistence")
+		}
+	}
+
+	toolCallsJSON := ""
+	if m.ToolCalls != nil {
+		toolCallsJSON = string(m.ToolCalls)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, m.Content, toolCallsJSON, m.ToolCallID, m.TokenCount, m.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("storage: add message: %w", err)
+	}
+
+	// Touch conversation updated_at.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, m.ConversationID,
+	); err != nil {
+		return fmt.Errorf("storage: update conversation timestamp: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit tx: %w", err)
+	}
+	return nil
 }
 
 // MessageCount returns the number of messages in a conversation.

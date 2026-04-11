@@ -28,17 +28,26 @@ func (NoOpSummarizer) MaybeSummarize(context.Context, []provider.Message, string
 	return nil, nil
 }
 
-// Engine is the core agent orchestrator. It manages conversation history,
-// routes messages through the LLM provider, and dispatches tool calls.
+// PersistenceHook is called by the Engine at the right moments to persist
+// messages. SessionManager implements this interface; Engine controls timing.
+// Errors are propagated to callers so persistence failures are visible.
+type PersistenceHook interface {
+	OnUserMessage(ctx context.Context, session *Session, msg provider.Message) error
+	OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message) error
+	OnToolMessage(ctx context.Context, session *Session, msg provider.Message) error
+}
+
+// Engine is the core agent orchestrator. It is a stateless executor that
+// receives a Session, reads/writes history via Session methods, and returns
+// results. It does NOT hold any conversation state.
 type Engine struct {
 	provider     provider.Provider
 	dispatcher   *tools.Dispatcher
 	assembler    *ContextAssembler
 	summarizer   Summarizer
 	systemPrompt string
-	convID       string // current conversation ID
-	mu           sync.Mutex
-	history      []provider.Message
+	promptMu     sync.RWMutex // protects systemPrompt
+	persistence  PersistenceHook
 }
 
 // Config holds the parameters for creating a new Engine.
@@ -48,6 +57,7 @@ type Config struct {
 	SystemPrompt string
 	MaxContext   int
 	Summarizer   Summarizer
+	Persistence  PersistenceHook
 }
 
 // New creates an Engine with the given configuration.
@@ -62,14 +72,8 @@ func New(cfg Config) *Engine {
 		assembler:    NewContextAssembler(cfg.MaxContext, cfg.Provider),
 		summarizer:   s,
 		systemPrompt: cfg.SystemPrompt,
+		persistence:  cfg.Persistence,
 	}
-}
-
-// SetConversationID sets the current conversation ID for memory attribution.
-func (e *Engine) SetConversationID(id string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.convID = id
 }
 
 // Assembler returns the context assembler for external configuration.
@@ -77,28 +81,66 @@ func (e *Engine) Assembler() *ContextAssembler {
 	return e.assembler
 }
 
+// persistAndAppendUser persists a user message first, then appends to session
+// only on success. This prevents session/SQLite divergence.
+func (e *Engine) persistAndAppendUser(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnUserMessage(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist user message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
+// persistAndAppendAssistant persists an assistant message first, then appends
+// to session only on success.
+func (e *Engine) persistAndAppendAssistant(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnAssistantMessageComplete(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist assistant message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
+// persistAndAppendTool persists a tool message first, then appends to session
+// only on success.
+func (e *Engine) persistAndAppendTool(ctx context.Context, session *Session, msg provider.Message) error {
+	if e.persistence != nil {
+		if err := e.persistence.OnToolMessage(ctx, session, msg); err != nil {
+			return fmt.Errorf("engine: persist tool message: %w", err)
+		}
+	}
+	session.AppendMessage(msg)
+	return nil
+}
+
 // Send sends a user message, handles any tool call loops, and returns the
 // final assistant text response (non-streaming).
-func (e *Engine) Send(ctx context.Context, userMessage string) (string, error) {
-	e.mu.Lock()
-	e.history = append(e.history, provider.Message{Role: "user", Content: userMessage})
-	e.mu.Unlock()
+func (e *Engine) Send(ctx context.Context, session *Session, userMessage string) (string, error) {
+	userMsg := provider.Message{Role: "user", Content: userMessage}
+	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
+		return "", err
+	}
 
-	e.maybeSummarize(ctx)
-	return e.runToolLoop(ctx)
+	e.maybeSummarize(ctx, session)
+	return e.runToolLoop(ctx, session)
 }
 
 // SendStream sends a user message and returns a channel of streaming chunks.
 // After streaming completes, if the response contains tool calls, it falls back
 // to non-streaming mode for the tool loop and returns the final text on the channel.
-func (e *Engine) SendStream(ctx context.Context, userMessage string) (<-chan provider.StreamChunk, error) {
-	e.mu.Lock()
-	e.history = append(e.history, provider.Message{Role: "user", Content: userMessage})
-	e.mu.Unlock()
+func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage string) (<-chan provider.StreamChunk, error) {
+	userMsg := provider.Message{Role: "user", Content: userMessage}
+	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
+		return nil, err
+	}
 
-	e.maybeSummarize(ctx)
+	e.maybeSummarize(ctx, session)
 
-	messages := e.buildMessages()
+	messages := e.buildMessages(session)
 	req := e.buildRequest(messages)
 
 	ch, err := e.provider.ChatStream(ctx, req)
@@ -122,30 +164,33 @@ func (e *Engine) SendStream(ctx context.Context, userMessage string) (<-chan pro
 
 		// If tool calls were returned, handle the tool loop.
 		if len(toolCalls) > 0 {
-			e.mu.Lock()
-			e.history = append(e.history, provider.Message{
+			assistantMsg := provider.Message{
 				Role:      "assistant",
 				Content:   fullContent,
 				ToolCalls: toolCalls,
-			})
-			e.mu.Unlock()
-
-			if err := e.dispatchToolCalls(ctx, toolCalls); err != nil {
+			}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
 				return
 			}
 
-			// Continue with non-streaming tool loop.
-			finalText, err := e.runToolLoop(ctx)
+			if err := e.dispatchToolCalls(ctx, session, toolCalls); err != nil {
+				out <- provider.StreamChunk{Error: err, Done: true}
+				return
+			}
+
+			finalText, err := e.runToolLoop(ctx, session)
 			if err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
 				return
 			}
 			out <- provider.StreamChunk{Content: "\n" + finalText}
 		} else {
-			e.mu.Lock()
-			e.history = append(e.history, provider.Message{Role: "assistant", Content: fullContent})
-			e.mu.Unlock()
+			assistantMsg := provider.Message{Role: "assistant", Content: fullContent}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+				out <- provider.StreamChunk{Error: err, Done: true}
+				return
+			}
 		}
 	}()
 
@@ -157,47 +202,27 @@ func (e *Engine) ProviderName() string {
 	return e.provider.Name()
 }
 
-// History returns a copy of the current conversation history.
-func (e *Engine) History() []provider.Message {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	h := make([]provider.Message, len(e.history))
-	copy(h, e.history)
-	return h
-}
-
-// SetHistory replaces the conversation history (used when loading from storage).
-func (e *Engine) SetHistory(history []provider.Message) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.history = history
-}
-
 // SetSystemPrompt updates the engine's system prompt (thread-safe).
 func (e *Engine) SetSystemPrompt(prompt string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.promptMu.Lock()
+	defer e.promptMu.Unlock()
 	e.systemPrompt = prompt
 }
 
-// ClearHistory resets the conversation history.
-func (e *Engine) ClearHistory() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.history = nil
-}
+func (e *Engine) buildMessages(session *Session) []provider.Message {
+	e.promptMu.RLock()
+	prompt := e.systemPrompt
+	e.promptMu.RUnlock()
 
-func (e *Engine) buildMessages() []provider.Message {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	history := session.GetHistory()
 	if e.assembler != nil {
-		return e.assembler.Assemble(e.systemPrompt, e.history, 500) // ~500 tokens for tool defs
+		return e.assembler.Assemble(prompt, history, 500) // ~500 tokens for tool defs
 	}
-	msgs := make([]provider.Message, 0, len(e.history)+1)
-	if e.systemPrompt != "" {
-		msgs = append(msgs, provider.Message{Role: "system", Content: e.systemPrompt})
+	msgs := make([]provider.Message, 0, len(history)+1)
+	if prompt != "" {
+		msgs = append(msgs, provider.Message{Role: "system", Content: prompt})
 	}
-	msgs = append(msgs, e.history...)
+	msgs = append(msgs, history...)
 	return msgs
 }
 
@@ -219,7 +244,7 @@ func (e *Engine) buildRequest(messages []provider.Message) provider.ChatRequest 
 	return req
 }
 
-func (e *Engine) dispatchToolCalls(ctx context.Context, toolCalls []provider.ToolCall) error {
+func (e *Engine) dispatchToolCalls(ctx context.Context, session *Session, toolCalls []provider.ToolCall) error {
 	if e.dispatcher == nil {
 		return fmt.Errorf("engine: tool calls received but no dispatcher configured")
 	}
@@ -235,25 +260,25 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, toolCalls []provider.Too
 
 	results := e.dispatcher.Dispatch(ctx, calls)
 
-	e.mu.Lock()
 	for _, r := range results {
-		e.history = append(e.history, provider.Message{
+		toolMsg := provider.Message{
 			Role:       "tool",
 			Content:    r.Content,
 			ToolCallID: r.CallID,
-		})
+		}
+		if err := e.persistAndAppendTool(ctx, session, toolMsg); err != nil {
+			return err
+		}
 	}
-	e.mu.Unlock()
 
 	return nil
 }
 
 // runToolLoop calls the provider in a loop, dispatching any tool calls, until
-// a final text response is produced or maxToolRounds is exceeded. Both Send
-// and SendStream delegate to this after appending the user message to history.
-func (e *Engine) runToolLoop(ctx context.Context) (string, error) {
+// a final text response is produced or maxToolRounds is exceeded.
+func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, error) {
 	for round := 0; round < maxToolRounds; round++ {
-		messages := e.buildMessages()
+		messages := e.buildMessages(session)
 		req := e.buildRequest(messages)
 
 		resp, err := e.provider.Chat(ctx, req)
@@ -262,21 +287,23 @@ func (e *Engine) runToolLoop(ctx context.Context) (string, error) {
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			e.mu.Lock()
-			e.history = append(e.history, provider.Message{Role: "assistant", Content: resp.Content})
-			e.mu.Unlock()
+			assistantMsg := provider.Message{Role: "assistant", Content: resp.Content}
+			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+				return "", err
+			}
 			return resp.Content, nil
 		}
 
-		e.mu.Lock()
-		e.history = append(e.history, provider.Message{
+		assistantMsg := provider.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
-		})
-		e.mu.Unlock()
+		}
+		if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
+			return "", err
+		}
 
-		if err := e.dispatchToolCalls(ctx, resp.ToolCalls); err != nil {
+		if err := e.dispatchToolCalls(ctx, session, resp.ToolCalls); err != nil {
 			return "", err
 		}
 	}
@@ -284,21 +311,15 @@ func (e *Engine) runToolLoop(ctx context.Context) (string, error) {
 }
 
 // maybeSummarize runs rolling summarization if the history exceeds the threshold.
-func (e *Engine) maybeSummarize(ctx context.Context) {
-	e.mu.Lock()
-	h := make([]provider.Message, len(e.history))
-	copy(h, e.history)
-	convID := e.convID
-	e.mu.Unlock()
+func (e *Engine) maybeSummarize(ctx context.Context, session *Session) {
+	h := session.GetHistory()
 
-	result, err := e.summarizer.MaybeSummarize(ctx, h, convID)
+	result, err := e.summarizer.MaybeSummarize(ctx, h, session.ConversationID)
 	if err != nil || result == nil {
 		return
 	}
 
-	e.mu.Lock()
-	e.history = result.RemainingHistory
-	e.mu.Unlock()
+	session.SetHistory(result.RemainingHistory)
 }
 
 // ToolDefinitionsJSON returns tool definitions as raw JSON for debug/display.

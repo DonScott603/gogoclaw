@@ -23,18 +23,22 @@ import (
 	"github.com/DonScott603/gogoclaw/internal/health"
 	"github.com/DonScott603/gogoclaw/internal/storage"
 	"github.com/DonScott603/gogoclaw/pkg/types"
+
+	"github.com/google/uuid"
 )
 
 // RESTChannel implements Channel as an HTTP server.
 type RESTChannel struct {
 	cfg            config.ChannelConfig
 	engine         *engine.Engine
+	sessionManager *engine.SessionManager
 	store          *storage.Store
 	monitor        *health.Monitor
 	auditLogger    *audit.Logger
 	inboxDir       string
 	apiKey         string
 	allowedOrigins map[string]bool
+	rateLimiter    *rateLimiter
 
 	mu      sync.Mutex
 	handler func(ctx context.Context, msg types.InboundMessage)
@@ -43,12 +47,14 @@ type RESTChannel struct {
 
 // RESTConfig holds the dependencies for creating a REST channel.
 type RESTConfig struct {
-	Channel     config.ChannelConfig
-	Engine      *engine.Engine
-	Store       *storage.Store
-	Monitor     *health.Monitor
-	AuditLogger *audit.Logger
-	InboxDir    string
+	Channel        config.ChannelConfig
+	Engine         *engine.Engine
+	SessionManager *engine.SessionManager
+	Store          *storage.Store
+	Monitor        *health.Monitor
+	AuditLogger    *audit.Logger
+	InboxDir       string
+	RateLimit      int // requests per minute, 0 = use default (60)
 }
 
 // NewREST creates a new REST API channel.
@@ -68,15 +74,22 @@ func NewREST(cfg RESTConfig) (*RESTChannel, error) {
 		origins[o] = true
 	}
 
+	rateLimit := cfg.RateLimit
+	if rateLimit <= 0 {
+		rateLimit = 60
+	}
+
 	rc := &RESTChannel{
 		cfg:            cfg.Channel,
 		engine:         cfg.Engine,
+		sessionManager: cfg.SessionManager,
 		store:          cfg.Store,
 		monitor:        cfg.Monitor,
 		auditLogger:    cfg.AuditLogger,
 		inboxDir:       cfg.InboxDir,
 		apiKey:         apiKey,
 		allowedOrigins: origins,
+		rateLimiter:    newRateLimiter(rateLimit),
 	}
 
 	mux := http.NewServeMux()
@@ -86,7 +99,7 @@ func NewREST(cfg RESTConfig) (*RESTChannel, error) {
 
 	rc.server = &http.Server{
 		Addr:    listen,
-		Handler: rc.corsMiddleware(rc.authMiddleware(rc.auditMiddleware(mux))),
+		Handler: rc.corsMiddleware(rc.authMiddleware(rc.rateLimitMiddleware(rc.auditMiddleware(mux)))),
 	}
 
 	return rc, nil
@@ -185,6 +198,25 @@ func (rc *RESTChannel) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// rateLimitMiddleware enforces per-API-key rate limiting.
+func (rc *RESTChannel) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		if key == "" {
+			key = "_anonymous"
+		}
+		retryAfter := rc.rateLimiter.allow(key)
+		if retryAfter > 0 {
+			writeJSON(w, http.StatusTooManyRequests, rateLimitResponse{
+				Error:      "rate limit exceeded",
+				RetryAfter: int(retryAfter.Seconds()) + 1,
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // auditMiddleware logs every REST request to the audit trail.
 func (rc *RESTChannel) auditMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +268,11 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type rateLimitResponse struct {
+	Error      string `json:"error"`
+	RetryAfter int    `json:"retry_after"`
+}
+
 // --- handlers ---
 
 func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
@@ -280,8 +317,14 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ConversationID == "" {
-		req.ConversationID = fmt.Sprintf("rest-%d", time.Now().UnixNano())
+	// Validate conversation_id.
+	if req.ConversationID != "" {
+		if len(req.ConversationID) > 128 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "conversation_id must be at most 128 characters"})
+			return
+		}
+	} else {
+		req.ConversationID = uuid.New().String()
 	}
 
 	rc.mu.Lock()
@@ -306,8 +349,13 @@ func (rc *RESTChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		filePrefix = "[Files uploaded: " + strings.Join(parts, ", ") + "] You can read them with file_read using paths relative to the workspace. "
 	}
 
+	session, err := rc.sessionManager.GetOrCreate(r.Context(), "rest", req.ConversationID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: session: " + err.Error()})
+		return
+	}
 	prompt := "[Channel: REST API] " + filePrefix + req.Text
-	resp, err := rc.engine.Send(r.Context(), prompt)
+	resp, err := rc.engine.Send(r.Context(), session, prompt)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "channel: rest: engine: " + err.Error()})
 		return
@@ -432,4 +480,62 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// --- rate limiter ---
+
+// rateLimiter implements a token bucket rate limiter keyed by API key string.
+type rateLimiter struct {
+	maxTokens  int
+	refillRate float64 // tokens per second
+	buckets    map[string]*bucket
+	mu         sync.Mutex
+}
+
+type bucket struct {
+	tokens   float64
+	lastTime time.Time
+}
+
+func newRateLimiter(requestsPerMinute int) *rateLimiter {
+	return &rateLimiter{
+		maxTokens:  requestsPerMinute,
+		refillRate: float64(requestsPerMinute) / 60.0,
+		buckets:    make(map[string]*bucket),
+	}
+}
+
+// allow checks if a request is allowed for the given key.
+// Returns 0 if allowed, or the duration to wait before retrying.
+func (rl *rateLimiter) allow(key string) time.Duration {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	b, ok := rl.buckets[key]
+	if !ok {
+		b = &bucket{
+			tokens:   float64(rl.maxTokens),
+			lastTime: now,
+		}
+		rl.buckets[key] = b
+	}
+
+	// Refill tokens based on elapsed time.
+	elapsed := now.Sub(b.lastTime).Seconds()
+	b.tokens += elapsed * rl.refillRate
+	if b.tokens > float64(rl.maxTokens) {
+		b.tokens = float64(rl.maxTokens)
+	}
+	b.lastTime = now
+
+	if b.tokens >= 1.0 {
+		b.tokens -= 1.0
+		return 0
+	}
+
+	// Calculate wait time until one token is available.
+	deficit := 1.0 - b.tokens
+	waitSeconds := deficit / rl.refillRate
+	return time.Duration(waitSeconds * float64(time.Second))
 }

@@ -4,13 +4,18 @@ package tui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/health"
 	"github.com/DonScott603/gogoclaw/internal/provider"
+	"github.com/DonScott603/gogoclaw/internal/storage"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -75,7 +80,11 @@ const (
 
 // model is the bubbletea model for the GoGoClaw TUI.
 type model struct {
+	ctx            context.Context
 	engine         *engine.Engine
+	sessionManager *engine.SessionManager
+	store          *storage.Store
+	currentSession *engine.Session
 	viewport       viewport.Model
 	textarea       textarea.Model
 	messages       []chatMessage
@@ -96,8 +105,8 @@ type model struct {
 
 // New creates a new bubbletea program for the TUI.
 // An optional health.Monitor can be passed to enable the health dashboard (F2).
-func New(eng *engine.Engine, opts ...Option) *tea.Program {
-	m := initialModel(eng)
+func New(ctx context.Context, eng *engine.Engine, sm *engine.SessionManager, store *storage.Store, opts ...Option) *tea.Program {
+	m := initialModel(ctx, eng, sm, store)
 	for _, opt := range opts {
 		opt(&m)
 	}
@@ -141,22 +150,13 @@ func (g *ConfirmGate) SetProgram(p *tea.Program) {
 	g.program = p
 }
 
-// NewWithConfirmGate creates a TUI and returns a shell confirmation function
-// that can be passed to the tool dispatcher.
-func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) bool) {
-	m := initialModel(eng)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-
-	confirmFn := func(command string) bool {
-		ch := make(chan bool, 1)
-		p.Send(confirmShellMsg{command: command, resultCh: ch})
-		return <-ch
-	}
-
-	return p, confirmFn
+func generateConversationID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
-func initialModel(eng *engine.Engine) model {
+func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionManager, store *storage.Store) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, F2 health, Esc quit)"
 	ta.Focus()
@@ -169,14 +169,77 @@ func initialModel(eng *engine.Engine) model {
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
 		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | F2: health dashboard\n")
 
-	return model{
-		engine:   eng,
-		viewport: vp,
-		textarea: ta,
-		conversations: []conversationEntry{
-			{id: "default", title: "New Conversation"},
-		},
+	// Load existing conversations from the store.
+	var entries []conversationEntry
+	if store != nil {
+		convos, err := store.ListConversations(ctx)
+		if err != nil {
+			log.Printf("tui: load conversations: %v", err)
+		} else {
+			for _, c := range convos {
+				title := c.Title
+				if title == "" {
+					title = "Conversation"
+				}
+				entries = append(entries, conversationEntry{id: c.ID, title: title})
+			}
+		}
 	}
+
+	// If no existing conversations, create a new one.
+	var session *engine.Session
+	var startupErr error
+	if len(entries) == 0 {
+		newID := generateConversationID()
+		if store != nil {
+			now := time.Now()
+			if err := store.CreateConversation(ctx, storage.Conversation{
+				ID: newID, Title: "New Conversation", Agent: "base",
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				startupErr = fmt.Errorf("failed to create initial conversation: %w", err)
+				log.Printf("tui: %v", startupErr)
+			}
+		}
+		entries = []conversationEntry{{id: newID, title: "New Conversation"}}
+		if startupErr == nil {
+			s, err := sm.GetOrCreate(ctx, "tui", newID)
+			if err != nil {
+				startupErr = fmt.Errorf("failed to load initial session: %w", err)
+				log.Printf("tui: %v", startupErr)
+			}
+			session = s
+		}
+	} else {
+		// Use the most recent conversation.
+		s, err := sm.GetOrCreate(ctx, "tui", entries[0].id)
+		if err != nil {
+			startupErr = fmt.Errorf("failed to load session: %w", err)
+			log.Printf("tui: %v", startupErr)
+		}
+		session = s
+	}
+
+	m := model{
+		ctx:            ctx,
+		engine:         eng,
+		sessionManager: sm,
+		store:          store,
+		currentSession: session,
+		viewport:       vp,
+		textarea:       ta,
+		conversations:  entries,
+		err:            startupErr,
+	}
+
+	if startupErr != nil {
+		vp.SetContent("GoGoClaw started in degraded mode — session could not be loaded.\n" +
+			"Press Ctrl+N to create a new conversation, or Esc to quit.\n\n" +
+			"Error: " + startupErr.Error() + "\n")
+		m.viewport = vp
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -239,6 +302,10 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			return m, nil
 		}
+		if m.currentSession == nil {
+			m.err = fmt.Errorf("no active session — press Ctrl+N to create one")
+			return m, nil
+		}
 		text := strings.TrimSpace(m.textarea.Value())
 		if text == "" {
 			return m, nil
@@ -253,13 +320,29 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.startStream(text)
 
 	case tea.KeyCtrlN:
+		newID := generateConversationID()
+		if m.store != nil {
+			now := time.Now()
+			if err := m.store.CreateConversation(m.ctx, storage.Conversation{
+				ID: newID, Title: "New Conversation", Agent: "base",
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				log.Printf("tui: create conversation: %v", err)
+				return m, nil // preserve current state
+			}
+		}
+		s, err := m.sessionManager.GetOrCreate(m.ctx, "tui", newID)
+		if err != nil {
+			log.Printf("tui: create session: %v", err)
+			return m, nil // preserve current state
+		}
+		// Only mutate model state after both operations succeed.
 		m.messages = nil
-		m.engine.ClearHistory()
 		m.streamBuf = ""
 		m.streaming = false
-		id := fmt.Sprintf("conv-%d", len(m.conversations))
-		m.conversations = append(m.conversations, conversationEntry{id: id, title: "New Conversation"})
+		m.conversations = append(m.conversations, conversationEntry{id: newID, title: "New Conversation"})
 		m.activeConvoIdx = len(m.conversations) - 1
+		m.currentSession = s
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
@@ -267,6 +350,24 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activePanel == panelChat {
 			m.activePanel = panelConversations
 		} else {
+			if m.activeConvoIdx < len(m.conversations) {
+				selectedID := m.conversations[m.activeConvoIdx].id
+				s, err := m.sessionManager.GetOrCreate(m.ctx, "tui", selectedID)
+				if err != nil {
+					log.Printf("tui: switch session %s: %v", selectedID, err)
+				} else {
+					m.currentSession = s
+					// Rebuild display messages from session history.
+					h := m.currentSession.GetHistory()
+					m.messages = nil
+					for _, msg := range h {
+						if msg.Role == "system" {
+							continue
+						}
+						m.messages = append(m.messages, chatMessage{role: msg.Role, content: msg.Content})
+					}
+				}
+			}
 			m.activePanel = panelChat
 		}
 		m.viewport.SetContent(m.renderMessages())
@@ -537,7 +638,7 @@ func PIIWarnFunc(p *tea.Program) func(patterns []string) {
 
 func (m model) startStream(text string) tea.Cmd {
 	return func() tea.Msg {
-		ch, err := m.engine.SendStream(context.Background(), text)
+		ch, err := m.engine.SendStream(m.ctx, m.currentSession, text)
 		if err != nil {
 			return errMsg{err: err}
 		}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/agent"
 	"github.com/DonScott603/gogoclaw/internal/config"
@@ -14,22 +15,29 @@ import (
 	"github.com/DonScott603/gogoclaw/internal/tools"
 )
 
-// EngineDeps holds the engine, tool dispatcher, and health monitor.
+// EngineDeps holds the engine, tool dispatcher, session manager, and health monitor.
 type EngineDeps struct {
-	Engine     *engine.Engine
-	Dispatcher *tools.Dispatcher
-	Monitor    *health.Monitor
+	Engine         *engine.Engine
+	Dispatcher     *tools.Dispatcher
+	SessionManager *engine.SessionManager
+	Monitor        *health.Monitor
 }
 
-// InitEngine builds the tool dispatcher, engine, and health monitor.
+// InitEngine builds the tool dispatcher, engine, session manager, and health monitor.
 func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, storeDeps StorageDeps, memDeps MemoryDeps, skillDeps SkillDeps, auditDeps AuditDeps, confirmFn tools.ConfirmFunc) EngineDeps {
 	onScrub := func(component, ctxStr string) {
 		auditDeps.Logger.LogSecretScrubbed(component, ctxStr)
 	}
 
+	// Resolve shell timeout from agent config.
+	shellTimeout := 30 * time.Second
+	if agent, ok := cfg.Agents["base"]; ok && agent.Shell.Timeout > 0 {
+		shellTimeout = agent.Shell.Timeout
+	}
+
 	dispatcher := tools.NewCoreDispatcher(
 		storeDeps.Workspace.Validator, storeDeps.Workspace.Base,
-		confirmFn, memDeps.Store, memDeps.SearchOpts,
+		confirmFn, shellTimeout, memDeps.Store, memDeps.SearchOpts,
 		secDeps.NetTransport, secDeps.Scrubber, onScrub, skillDeps.Lister,
 	)
 
@@ -47,12 +55,15 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 		maxCtx = agent.Context.MaxHistoryTokens
 	}
 
+	sessionManager := engine.NewSessionManager(storeDeps.Store)
+
 	eng := engine.New(engine.Config{
 		Provider:     secDeps.ActiveProvider,
 		Dispatcher:   dispatcher,
 		SystemPrompt: systemPrompt,
 		MaxContext:   maxCtx,
 		Summarizer:   memDeps.Summarizer,
+		Persistence:  sessionManager,
 	})
 
 	topK := 5
@@ -68,9 +79,10 @@ func InitEngine(cfg *config.Config, configDir string, secDeps SecurityDeps, stor
 	monitor.Start()
 
 	return EngineDeps{
-		Engine:     eng,
-		Dispatcher: dispatcher,
-		Monitor:    monitor,
+		Engine:         eng,
+		Dispatcher:     dispatcher,
+		SessionManager: sessionManager,
+		Monitor:        monitor,
 	}
 }
 

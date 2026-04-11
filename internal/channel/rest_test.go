@@ -40,6 +40,58 @@ func (m *mockProvider) ChatStream(_ context.Context, _ provider.ChatRequest) (<-
 func (m *mockProvider) CountTokens(content string) (int, error) { return len(content) / 4, nil }
 func (m *mockProvider) Healthy(_ context.Context) bool          { return true }
 
+// newTestRESTWithRate creates a RESTChannel with a custom rate limit.
+func newTestRESTWithRate(t *testing.T, rateLimit int, opts ...func(*config.ChannelConfig)) *RESTChannel {
+	t.Helper()
+
+	eng := engine.New(engine.Config{
+		Provider:     &mockProvider{response: "Hello from REST!"},
+		SystemPrompt: "test",
+		MaxContext:   4096,
+	})
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := storage.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	mon := health.NewMonitor(health.MonitorConfig{PIIMode: "disabled"})
+
+	inboxDir := filepath.Join(t.TempDir(), "inbox")
+	os.MkdirAll(inboxDir, 0o755)
+
+	var auditBuf bytes.Buffer
+	logger := audit.NewLoggerFromWriter(&auditBuf)
+
+	chanCfg := config.ChannelConfig{
+		Name:    "rest",
+		Enabled: true,
+		Listen:  "127.0.0.1:0",
+	}
+	for _, fn := range opts {
+		fn(&chanCfg)
+	}
+
+	sm := engine.NewSessionManager(store)
+
+	rc, err := NewREST(RESTConfig{
+		Channel:        chanCfg,
+		Engine:         eng,
+		SessionManager: sm,
+		Store:          store,
+		Monitor:        mon,
+		AuditLogger:    logger,
+		InboxDir:       inboxDir,
+		RateLimit:      rateLimit,
+	})
+	if err != nil {
+		t.Fatalf("NewREST: %v", err)
+	}
+	return rc
+}
+
 // newTestREST creates a RESTChannel backed by a mock engine and real SQLite store.
 func newTestREST(t *testing.T, opts ...func(*config.ChannelConfig)) *RESTChannel {
 	t.Helper()
@@ -74,13 +126,16 @@ func newTestREST(t *testing.T, opts ...func(*config.ChannelConfig)) *RESTChannel
 		fn(&chanCfg)
 	}
 
+	sm := engine.NewSessionManager(store)
+
 	rc, err := NewREST(RESTConfig{
-		Channel:     chanCfg,
-		Engine:      eng,
-		Store:       store,
-		Monitor:     mon,
-		AuditLogger: logger,
-		InboxDir:    inboxDir,
+		Channel:        chanCfg,
+		Engine:         eng,
+		SessionManager: sm,
+		Store:          store,
+		Monitor:        mon,
+		AuditLogger:    logger,
+		InboxDir:       inboxDir,
 	})
 	if err != nil {
 		t.Fatalf("NewREST: %v", err)
@@ -413,13 +468,15 @@ func TestRESTAuditLogging(t *testing.T) {
 		MaxContext:   4096,
 	})
 	mon := health.NewMonitor(health.MonitorConfig{PIIMode: "disabled"})
+	sm := engine.NewSessionManager(nil)
 
 	rc, err := NewREST(RESTConfig{
-		Channel:     config.ChannelConfig{Name: "rest", Enabled: true, APIKey: "key"},
-		Engine:      eng,
-		Monitor:     mon,
-		AuditLogger: logger,
-		InboxDir:    t.TempDir(),
+		Channel:        config.ChannelConfig{Name: "rest", Enabled: true, APIKey: "key"},
+		Engine:         eng,
+		SessionManager: sm,
+		Monitor:        mon,
+		AuditLogger:    logger,
+		InboxDir:       t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewREST: %v", err)
@@ -457,5 +514,45 @@ func TestRESTAuditLogging(t *testing.T) {
 	}
 	if event.Fields["status"] != "200" {
 		t.Errorf("status = %q, want 200", event.Fields["status"])
+	}
+}
+
+func TestRESTRateLimiting(t *testing.T) {
+	rc := newTestRESTWithRate(t, 3, func(c *config.ChannelConfig) {
+		c.APIKey = "key"
+	})
+
+	// Send 3 requests (within limit).
+	for i := 0; i < 3; i++ {
+		body, _ := json.Marshal(messageRequest{Text: "hi"})
+		req := httptest.NewRequest(http.MethodPost, "/api/message", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer key")
+		w := httptest.NewRecorder()
+		handler(rc).ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
+		}
+	}
+
+	// 4th request should be rate limited.
+	body, _ := json.Marshal(messageRequest{Text: "hi"})
+	req := httptest.NewRequest(http.MethodPost, "/api/message", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer key")
+	w := httptest.NewRecorder()
+	handler(rc).ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited request: status = %d, want 429", w.Code)
+	}
+
+	var resp rateLimitResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Error != "rate limit exceeded" {
+		t.Errorf("error = %q, want %q", resp.Error, "rate limit exceeded")
+	}
+	if resp.RetryAfter <= 0 {
+		t.Error("retry_after should be positive")
 	}
 }
