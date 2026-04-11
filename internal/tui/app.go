@@ -76,6 +76,8 @@ const (
 // model is the bubbletea model for the GoGoClaw TUI.
 type model struct {
 	engine         *engine.Engine
+	sessionManager *engine.SessionManager
+	currentSession *engine.Session
 	viewport       viewport.Model
 	textarea       textarea.Model
 	messages       []chatMessage
@@ -96,8 +98,8 @@ type model struct {
 
 // New creates a new bubbletea program for the TUI.
 // An optional health.Monitor can be passed to enable the health dashboard (F2).
-func New(eng *engine.Engine, opts ...Option) *tea.Program {
-	m := initialModel(eng)
+func New(eng *engine.Engine, sm *engine.SessionManager, opts ...Option) *tea.Program {
+	m := initialModel(eng, sm)
 	for _, opt := range opts {
 		opt(&m)
 	}
@@ -141,22 +143,7 @@ func (g *ConfirmGate) SetProgram(p *tea.Program) {
 	g.program = p
 }
 
-// NewWithConfirmGate creates a TUI and returns a shell confirmation function
-// that can be passed to the tool dispatcher.
-func NewWithConfirmGate(eng *engine.Engine) (*tea.Program, func(command string) bool) {
-	m := initialModel(eng)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-
-	confirmFn := func(command string) bool {
-		ch := make(chan bool, 1)
-		p.Send(confirmShellMsg{command: command, resultCh: ch})
-		return <-ch
-	}
-
-	return p, confirmFn
-}
-
-func initialModel(eng *engine.Engine) model {
+func initialModel(eng *engine.Engine, sm *engine.SessionManager) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, F2 health, Esc quit)"
 	ta.Focus()
@@ -169,12 +156,17 @@ func initialModel(eng *engine.Engine) model {
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
 		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | F2: health dashboard\n")
 
+	defaultConvID := "default"
+	session := sm.GetOrCreate("tui", defaultConvID)
+
 	return model{
-		engine:   eng,
-		viewport: vp,
-		textarea: ta,
+		engine:         eng,
+		sessionManager: sm,
+		currentSession: session,
+		viewport:       vp,
+		textarea:       ta,
 		conversations: []conversationEntry{
-			{id: "default", title: "New Conversation"},
+			{id: defaultConvID, title: "New Conversation"},
 		},
 	}
 }
@@ -254,12 +246,12 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlN:
 		m.messages = nil
-		m.engine.ClearHistory()
 		m.streamBuf = ""
 		m.streaming = false
 		id := fmt.Sprintf("conv-%d", len(m.conversations))
 		m.conversations = append(m.conversations, conversationEntry{id: id, title: "New Conversation"})
 		m.activeConvoIdx = len(m.conversations) - 1
+		m.currentSession = m.sessionManager.GetOrCreate("tui", id)
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
@@ -267,6 +259,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activePanel == panelChat {
 			m.activePanel = panelConversations
 		} else {
+			if m.activeConvoIdx < len(m.conversations) {
+				selectedID := m.conversations[m.activeConvoIdx].id
+				m.currentSession = m.sessionManager.GetOrCreate("tui", selectedID)
+				// Rebuild display messages from session history.
+				h := m.currentSession.GetHistory()
+				m.messages = nil
+				for _, msg := range h {
+					if msg.Role == "system" {
+						continue
+					}
+					m.messages = append(m.messages, chatMessage{role: msg.Role, content: msg.Content})
+				}
+			}
 			m.activePanel = panelChat
 		}
 		m.viewport.SetContent(m.renderMessages())
@@ -537,7 +542,7 @@ func PIIWarnFunc(p *tea.Program) func(patterns []string) {
 
 func (m model) startStream(text string) tea.Cmd {
 	return func() tea.Msg {
-		ch, err := m.engine.SendStream(context.Background(), text)
+		ch, err := m.engine.SendStream(context.Background(), m.currentSession, text)
 		if err != nil {
 			return errMsg{err: err}
 		}

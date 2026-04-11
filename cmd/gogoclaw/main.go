@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/DonScott603/gogoclaw/internal/agent"
 	"github.com/DonScott603/gogoclaw/internal/app"
 	"github.com/DonScott603/gogoclaw/internal/channel"
 	"github.com/DonScott603/gogoclaw/internal/config"
+	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/pii"
 	"github.com/DonScott603/gogoclaw/internal/tui"
 )
@@ -23,6 +26,10 @@ func main() {
 		fmt.Printf("gogoclaw %s\n", version)
 		return
 	}
+
+	// Set up graceful shutdown via signal.NotifyContext.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// Determine config directory.
 	home, err := os.UserHomeDir()
@@ -74,8 +81,10 @@ func main() {
 			templatesDir = "templates"
 		}
 		fmt.Println("Welcome to GoGoClaw! Running first-time setup...")
+		bootstrapSession := engDeps.SessionManager.GetOrCreate("tui", "bootstrap")
+		bootstrapSender := &bootstrapAdapter{engine: engDeps.Engine, session: bootstrapSession}
 		if err := agent.RunBootstrap(
-			context.Background(), engDeps.Engine, configDir,
+			ctx, bootstrapSender, configDir,
 			templatesDir, os.Stdin, os.Stdout,
 		); err != nil {
 			if errors.Is(err, agent.ErrSetupCancelled) {
@@ -110,7 +119,7 @@ func main() {
 	defer mcpDeps.Close()
 
 	// Create TUI and wire observers.
-	program := tui.New(engDeps.Engine, tui.WithHealthMonitor(engDeps.Monitor))
+	program := tui.New(engDeps.Engine, engDeps.SessionManager, tui.WithHealthMonitor(engDeps.Monitor))
 	gate.SetProgram(program)
 
 	onCall, onResult := tui.ToolCallObserver(program)
@@ -123,13 +132,19 @@ func main() {
 
 	// Start REST channel if enabled.
 	if restCfg, ok := cfg.Channels["rest"]; ok && restCfg.Enabled {
+		rateLimit := restCfg.RateLimit
+		if rateLimit <= 0 {
+			rateLimit = 60
+		}
 		restDeps, err := app.InitREST(engDeps, storeDeps, auditDeps, channel.RESTConfig{
-			Channel:     restCfg,
-			Engine:      engDeps.Engine,
-			Store:       storeDeps.Store,
-			Monitor:     engDeps.Monitor,
-			AuditLogger: auditDeps.Logger,
-			InboxDir:    storeDeps.Workspace.Inbox,
+			Channel:        restCfg,
+			Engine:         engDeps.Engine,
+			SessionManager: engDeps.SessionManager,
+			Store:          storeDeps.Store,
+			Monitor:        engDeps.Monitor,
+			AuditLogger:    auditDeps.Logger,
+			InboxDir:       storeDeps.Workspace.Inbox,
+			RateLimit:      rateLimit,
 		})
 		if err != nil {
 			log.Fatalf("rest: %v", err)
@@ -140,10 +155,11 @@ func main() {
 	// Start Telegram channel if enabled.
 	if tgCfg, ok := cfg.Channels["telegram"]; ok && tgCfg.Enabled {
 		tgDeps, err := app.InitTelegram(channel.TelegramConfig{
-			Channel:     tgCfg,
-			Engine:      engDeps.Engine,
-			AuditLogger: auditDeps.Logger,
-			InboxDir:    storeDeps.Workspace.Inbox,
+			Channel:        tgCfg,
+			Engine:         engDeps.Engine,
+			SessionManager: engDeps.SessionManager,
+			AuditLogger:    auditDeps.Logger,
+			InboxDir:       storeDeps.Workspace.Inbox,
 		})
 		if err != nil {
 			log.Printf("telegram: %v", err)
@@ -155,4 +171,15 @@ func main() {
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}
+}
+
+// bootstrapAdapter wraps Engine+Session to satisfy the agent.Sender interface
+// used during bootstrap, where the caller doesn't manage sessions.
+type bootstrapAdapter struct {
+	engine  *engine.Engine
+	session *engine.Session
+}
+
+func (b *bootstrapAdapter) Send(ctx context.Context, text string) (string, error) {
+	return b.engine.Send(ctx, b.session, text)
 }

@@ -5,9 +5,10 @@ import "time"
 // Config is the top-level application configuration, assembled from
 // multiple YAML files under ~/.gogoclaw/.
 type Config struct {
-	Workspace WorkspaceConfig          `yaml:"workspace" json:"workspace"`
-	Logging   LoggingConfig            `yaml:"logging" json:"logging"`
-	Storage   StorageConfig            `yaml:"storage" json:"storage"`
+	ConfigVersion int                      `yaml:"config_version" json:"config_version"`
+	Workspace     WorkspaceConfig          `yaml:"workspace" json:"workspace"`
+	Logging       LoggingConfig            `yaml:"logging" json:"logging"`
+	Storage       StorageConfig            `yaml:"storage" json:"storage"`
 	Providers map[string]ProviderConfig `yaml:"providers" json:"providers"`
 	Agents    map[string]AgentConfig   `yaml:"agents" json:"agents"`
 	Channels  map[string]ChannelConfig `yaml:"channels" json:"channels"`
@@ -123,9 +124,10 @@ type AgentMemoryConfig struct {
 	RecencyWeight      float64 `yaml:"recency_weight" json:"recency_weight"`
 }
 
-// ShellConfig controls shell execution confirmation.
+// ShellConfig controls shell execution confirmation and timeout.
 type ShellConfig struct {
-	Confirmation string `yaml:"confirmation" json:"confirmation"`
+	Confirmation string        `yaml:"confirmation" json:"confirmation"`
+	Timeout      time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 // AgentNetworkConfig allows per-agent network allowlist additions.
@@ -144,6 +146,7 @@ type ChannelConfig struct {
 	APIKey         string        `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	APIKeyEnv      string        `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
 	AllowedOrigins []string      `yaml:"allowed_origins,omitempty" json:"allowed_origins,omitempty"`
+	RateLimit      int           `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"` // requests per minute
 }
 
 // NetworkConfig defines the global network allowlist.

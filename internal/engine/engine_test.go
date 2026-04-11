@@ -51,15 +51,24 @@ func newTestEngine(p provider.Provider, prompt string) *Engine {
 	return New(Config{
 		Provider:     p,
 		SystemPrompt: prompt,
-		MaxContext:    8192,
+		MaxContext:   8192,
 	})
+}
+
+func newTestSession(channel, convID string) *Session {
+	return &Session{
+		ID:             channel + ":" + convID,
+		ConversationID: convID,
+		Channel:        channel,
+	}
 }
 
 func TestEngineSend(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "Hello from mock!"}
 	eng := newTestEngine(mock, "You are a test assistant.")
+	session := newTestSession("tui", "test")
 
-	resp, err := eng.Send(context.Background(), "Hi")
+	resp, err := eng.Send(context.Background(), session, "Hi")
 	if err != nil {
 		t.Fatalf("Send() error: %v", err)
 	}
@@ -71,8 +80,9 @@ func TestEngineSend(t *testing.T) {
 func TestEngineSendStream(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "Streamed!"}
 	eng := newTestEngine(mock, "")
+	session := newTestSession("tui", "test")
 
-	ch, err := eng.SendStream(context.Background(), "Hi")
+	ch, err := eng.SendStream(context.Background(), session, "Hi")
 	if err != nil {
 		t.Fatalf("SendStream() error: %v", err)
 	}
@@ -89,11 +99,12 @@ func TestEngineSendStream(t *testing.T) {
 func TestEngineHistoryAccumulates(t *testing.T) {
 	mock := &mockProvider{name: "mock", response: "reply"}
 	eng := newTestEngine(mock, "system prompt")
+	session := newTestSession("tui", "test")
 
-	eng.Send(context.Background(), "msg1")
-	eng.Send(context.Background(), "msg2")
+	eng.Send(context.Background(), session, "msg1")
+	eng.Send(context.Background(), session, "msg2")
 
-	h := eng.History()
+	h := session.GetHistory()
 	// history should have: user msg1, assistant reply, user msg2, assistant reply
 	if len(h) != 4 {
 		t.Errorf("history length = %d, want 4", len(h))
@@ -129,8 +140,9 @@ func TestEngineToolCallLoop(t *testing.T) {
 		SystemPrompt: "",
 		MaxContext:    8192,
 	})
+	session := newTestSession("tui", "test")
 
-	resp, err := eng.Send(context.Background(), "use a tool")
+	resp, err := eng.Send(context.Background(), session, "use a tool")
 	if err != nil {
 		t.Fatalf("Send() with tool calls error: %v", err)
 	}
@@ -139,11 +151,39 @@ func TestEngineToolCallLoop(t *testing.T) {
 	}
 
 	// History should contain: user, assistant(toolcall), tool(result), assistant(final)
-	h := eng.History()
+	h := session.GetHistory()
 	if len(h) != 4 {
 		t.Errorf("history length = %d, want 4", len(h))
 		for i, m := range h {
 			t.Logf("  [%d] role=%s content=%q", i, m.Role, m.Content)
 		}
+	}
+}
+
+func TestEngineIsolatedSessions(t *testing.T) {
+	mock := &mockProvider{name: "mock", response: "reply"}
+	eng := newTestEngine(mock, "")
+
+	s1 := newTestSession("tui", "conv1")
+	s2 := newTestSession("tui", "conv2")
+
+	eng.Send(context.Background(), s1, "message for conv1")
+	eng.Send(context.Background(), s2, "message for conv2")
+
+	h1 := s1.GetHistory()
+	h2 := s2.GetHistory()
+
+	if len(h1) != 2 {
+		t.Errorf("s1 history length = %d, want 2", len(h1))
+	}
+	if len(h2) != 2 {
+		t.Errorf("s2 history length = %d, want 2", len(h2))
+	}
+
+	if h1[0].Content != "message for conv1" {
+		t.Errorf("s1 first message = %q, want %q", h1[0].Content, "message for conv1")
+	}
+	if h2[0].Content != "message for conv2" {
+		t.Errorf("s2 first message = %q, want %q", h2[0].Content, "message for conv2")
 	}
 }

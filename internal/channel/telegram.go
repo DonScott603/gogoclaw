@@ -26,12 +26,13 @@ const telegramMaxMessage = 3500
 
 // TelegramChannel implements Channel using the Telegram Bot API.
 type TelegramChannel struct {
-	cfg          config.ChannelConfig
-	engine       *engine.Engine
-	auditLogger  *audit.Logger
-	inboxDir     string
-	allowedUsers map[string]bool // usernames and string user IDs
-	bot          *tele.Bot
+	cfg            config.ChannelConfig
+	engine         *engine.Engine
+	sessionManager *engine.SessionManager
+	auditLogger    *audit.Logger
+	inboxDir       string
+	allowedUsers   map[string]bool // usernames and string user IDs
+	bot            *tele.Bot
 
 	mu      sync.Mutex
 	handler func(ctx context.Context, msg types.InboundMessage)
@@ -39,10 +40,11 @@ type TelegramChannel struct {
 
 // TelegramConfig holds the dependencies for creating a Telegram channel.
 type TelegramConfig struct {
-	Channel     config.ChannelConfig
-	Engine      *engine.Engine
-	AuditLogger *audit.Logger
-	InboxDir    string
+	Channel        config.ChannelConfig
+	Engine         *engine.Engine
+	SessionManager *engine.SessionManager
+	AuditLogger    *audit.Logger
+	InboxDir       string
 }
 
 // NewTelegram creates a new Telegram bot channel.
@@ -74,12 +76,13 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 	}
 
 	tc := &TelegramChannel{
-		cfg:          cfg.Channel,
-		engine:       cfg.Engine,
-		auditLogger:  cfg.AuditLogger,
-		inboxDir:     cfg.InboxDir,
-		allowedUsers: allowed,
-		bot:          bot,
+		cfg:            cfg.Channel,
+		engine:         cfg.Engine,
+		sessionManager: cfg.SessionManager,
+		auditLogger:    cfg.AuditLogger,
+		inboxDir:       cfg.InboxDir,
+		allowedUsers:   allowed,
+		bot:            bot,
 	}
 
 	bot.Handle(tele.OnText, tc.onText)
@@ -93,7 +96,11 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 func (tc *TelegramChannel) Name() string { return "telegram" }
 
 // Start begins polling for Telegram updates (blocking).
-func (tc *TelegramChannel) Start(_ context.Context) error {
+func (tc *TelegramChannel) Start(ctx context.Context) error {
+	go func() {
+		<-ctx.Done()
+		tc.bot.Stop()
+	}()
 	tc.bot.Start()
 	return nil
 }
@@ -135,13 +142,18 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 		return nil
 	}
 
+	ctx := c.Get("ctx_context")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	convID := telegramConversationID(c.Chat().ID)
-	tc.engine.SetConversationID(convID)
+	session := tc.sessionManager.GetOrCreate("telegram", convID)
 
 	tc.notifyHandler(convID, c.Text(), c.Sender())
 
 	prompt := "[Channel: Telegram] " + c.Text()
-	resp, err := tc.engine.Send(context.Background(), prompt)
+	resp, err := tc.engine.Send(ctx.(context.Context), session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -175,11 +187,11 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
-	tc.engine.SetConversationID(convID)
+	session := tc.sessionManager.GetOrCreate("telegram", convID)
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text
-	resp, err := tc.engine.Send(context.Background(), prompt)
+	resp, err := tc.engine.Send(context.Background(), session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -214,11 +226,11 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 	}
 
 	convID := telegramConversationID(c.Chat().ID)
-	tc.engine.SetConversationID(convID)
+	session := tc.sessionManager.GetOrCreate("telegram", convID)
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text
-	resp, err := tc.engine.Send(context.Background(), prompt)
+	resp, err := tc.engine.Send(context.Background(), session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}

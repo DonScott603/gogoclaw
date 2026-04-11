@@ -25,6 +25,11 @@ func NewLoader(baseDir string) *Loader {
 
 // Load reads all config files and returns the merged Config.
 func (l *Loader) Load() (*Config, error) {
+	// Run config migrations before loading.
+	if err := migrateConfig(l.baseDir); err != nil {
+		return nil, fmt.Errorf("config: migrate: %w", err)
+	}
+
 	cfg := DefaultConfig()
 
 	if err := l.loadCoreConfig(cfg); err != nil {

@@ -80,33 +80,7 @@ func (s *Store) SetScrubber(scrubber Scrubber, onScrub ScrubNotifyFn) {
 }
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS conversations (
-			id         TEXT PRIMARY KEY,
-			title      TEXT NOT NULL DEFAULT '',
-			agent      TEXT NOT NULL DEFAULT 'base',
-			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
-
-		CREATE TABLE IF NOT EXISTS messages (
-			id              TEXT PRIMARY KEY,
-			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-			role            TEXT NOT NULL,
-			content         TEXT NOT NULL DEFAULT '',
-			tool_calls      TEXT,
-			tool_call_id    TEXT DEFAULT '',
-			token_count     INTEGER NOT NULL DEFAULT 0,
-			created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_messages_conversation
-			ON messages(conversation_id, created_at);
-	`)
-	if err != nil {
-		return fmt.Errorf("storage: migrate: %w", err)
-	}
-	return nil
+	return s.runMigrations()
 }
 
 // CreateConversation inserts a new conversation.
