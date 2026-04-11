@@ -21,16 +21,18 @@ type SessionKey struct {
 // responsible for persistence — loading history from SQLite on session
 // creation and writing messages via the PersistenceHook interface.
 type SessionManager struct {
-	sessions map[SessionKey]*Session
-	store    *storage.Store
-	mu       sync.RWMutex
+	sessions           map[SessionKey]*Session
+	knownConversations map[string]bool // conversation IDs that exist in SQLite
+	store              *storage.Store
+	mu                 sync.RWMutex
 }
 
 // NewSessionManager creates a SessionManager backed by the given store.
 func NewSessionManager(store *storage.Store) *SessionManager {
 	return &SessionManager{
-		sessions: make(map[SessionKey]*Session),
-		store:    store,
+		sessions:           make(map[SessionKey]*Session),
+		knownConversations: make(map[string]bool),
+		store:              store,
 	}
 }
 
@@ -67,6 +69,7 @@ func (sm *SessionManager) GetOrCreate(channel, convID string) *Session {
 		msgs, err := sm.store.GetMessages(context.Background(), convID)
 		if err == nil && len(msgs) > 0 {
 			s.History = storedToProviderMessages(msgs)
+			sm.knownConversations[convID] = true // already exists in DB
 		}
 	}
 

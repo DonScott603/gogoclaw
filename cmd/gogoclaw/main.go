@@ -119,7 +119,7 @@ func main() {
 	defer mcpDeps.Close()
 
 	// Create TUI and wire observers.
-	program := tui.New(engDeps.Engine, engDeps.SessionManager, tui.WithHealthMonitor(engDeps.Monitor))
+	program := tui.New(ctx, engDeps.Engine, engDeps.SessionManager, storeDeps.Store, tui.WithHealthMonitor(engDeps.Monitor))
 	gate.SetProgram(program)
 
 	onCall, onResult := tui.ToolCallObserver(program)
@@ -160,6 +160,7 @@ func main() {
 			SessionManager: engDeps.SessionManager,
 			AuditLogger:    auditDeps.Logger,
 			InboxDir:       storeDeps.Workspace.Inbox,
+			Ctx:            ctx,
 		})
 		if err != nil {
 			log.Printf("telegram: %v", err)

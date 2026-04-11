@@ -4,13 +4,18 @@ package tui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/health"
 	"github.com/DonScott603/gogoclaw/internal/provider"
+	"github.com/DonScott603/gogoclaw/internal/storage"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -75,8 +80,10 @@ const (
 
 // model is the bubbletea model for the GoGoClaw TUI.
 type model struct {
+	ctx            context.Context
 	engine         *engine.Engine
 	sessionManager *engine.SessionManager
+	store          *storage.Store
 	currentSession *engine.Session
 	viewport       viewport.Model
 	textarea       textarea.Model
@@ -98,8 +105,8 @@ type model struct {
 
 // New creates a new bubbletea program for the TUI.
 // An optional health.Monitor can be passed to enable the health dashboard (F2).
-func New(eng *engine.Engine, sm *engine.SessionManager, opts ...Option) *tea.Program {
-	m := initialModel(eng, sm)
+func New(ctx context.Context, eng *engine.Engine, sm *engine.SessionManager, store *storage.Store, opts ...Option) *tea.Program {
+	m := initialModel(ctx, eng, sm, store)
 	for _, opt := range opts {
 		opt(&m)
 	}
@@ -143,7 +150,13 @@ func (g *ConfirmGate) SetProgram(p *tea.Program) {
 	g.program = p
 }
 
-func initialModel(eng *engine.Engine, sm *engine.SessionManager) model {
+func generateConversationID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func initialModel(ctx context.Context, eng *engine.Engine, sm *engine.SessionManager, store *storage.Store) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (Ctrl+S send, Ctrl+N new, Ctrl+L list, F2 health, Esc quit)"
 	ta.Focus()
@@ -156,18 +169,52 @@ func initialModel(eng *engine.Engine, sm *engine.SessionManager) model {
 	vp.SetContent("Welcome to GoGoClaw. Type a message and press Ctrl+S to send.\n" +
 		"Ctrl+N: new conversation | Ctrl+L: toggle conversation list | F2: health dashboard\n")
 
-	defaultConvID := "default"
-	session := sm.GetOrCreate("tui", defaultConvID)
+	// Load existing conversations from the store.
+	var entries []conversationEntry
+	if store != nil {
+		convos, err := store.ListConversations(ctx)
+		if err != nil {
+			log.Printf("tui: load conversations: %v", err)
+		} else {
+			for _, c := range convos {
+				title := c.Title
+				if title == "" {
+					title = "Conversation"
+				}
+				entries = append(entries, conversationEntry{id: c.ID, title: title})
+			}
+		}
+	}
+
+	// If no existing conversations, create a new one.
+	var session *engine.Session
+	if len(entries) == 0 {
+		newID := generateConversationID()
+		if store != nil {
+			now := time.Now()
+			if err := store.CreateConversation(ctx, storage.Conversation{
+				ID: newID, Title: "New Conversation", Agent: "base",
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				log.Printf("tui: create initial conversation: %v", err)
+			}
+		}
+		entries = []conversationEntry{{id: newID, title: "New Conversation"}}
+		session = sm.GetOrCreate("tui", newID)
+	} else {
+		// Use the most recent conversation.
+		session = sm.GetOrCreate("tui", entries[0].id)
+	}
 
 	return model{
+		ctx:            ctx,
 		engine:         eng,
 		sessionManager: sm,
+		store:          store,
 		currentSession: session,
 		viewport:       vp,
 		textarea:       ta,
-		conversations: []conversationEntry{
-			{id: defaultConvID, title: "New Conversation"},
-		},
+		conversations:  entries,
 	}
 }
 
@@ -248,10 +295,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.streamBuf = ""
 		m.streaming = false
-		id := fmt.Sprintf("conv-%d", len(m.conversations))
-		m.conversations = append(m.conversations, conversationEntry{id: id, title: "New Conversation"})
+		newID := generateConversationID()
+		if m.store != nil {
+			now := time.Now()
+			if err := m.store.CreateConversation(m.ctx, storage.Conversation{
+				ID: newID, Title: "New Conversation", Agent: "base",
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				log.Printf("tui: create conversation: %v", err)
+			}
+		}
+		m.conversations = append(m.conversations, conversationEntry{id: newID, title: "New Conversation"})
 		m.activeConvoIdx = len(m.conversations) - 1
-		m.currentSession = m.sessionManager.GetOrCreate("tui", id)
+		m.currentSession = m.sessionManager.GetOrCreate("tui", newID)
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
@@ -542,7 +598,7 @@ func PIIWarnFunc(p *tea.Program) func(patterns []string) {
 
 func (m model) startStream(text string) tea.Cmd {
 	return func() tea.Msg {
-		ch, err := m.engine.SendStream(context.Background(), m.currentSession, text)
+		ch, err := m.engine.SendStream(m.ctx, m.currentSession, text)
 		if err != nil {
 			return errMsg{err: err}
 		}

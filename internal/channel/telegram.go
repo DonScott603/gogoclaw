@@ -33,6 +33,7 @@ type TelegramChannel struct {
 	inboxDir       string
 	allowedUsers   map[string]bool // usernames and string user IDs
 	bot            *tele.Bot
+	ctx            context.Context // shutdown context
 
 	mu      sync.Mutex
 	handler func(ctx context.Context, msg types.InboundMessage)
@@ -45,6 +46,7 @@ type TelegramConfig struct {
 	SessionManager *engine.SessionManager
 	AuditLogger    *audit.Logger
 	InboxDir       string
+	Ctx            context.Context
 }
 
 // NewTelegram creates a new Telegram bot channel.
@@ -75,6 +77,11 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		allowed[u] = true
 	}
 
+	shutdownCtx := cfg.Ctx
+	if shutdownCtx == nil {
+		shutdownCtx = context.Background()
+	}
+
 	tc := &TelegramChannel{
 		cfg:            cfg.Channel,
 		engine:         cfg.Engine,
@@ -83,6 +90,7 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		inboxDir:       cfg.InboxDir,
 		allowedUsers:   allowed,
 		bot:            bot,
+		ctx:            shutdownCtx,
 	}
 
 	bot.Handle(tele.OnText, tc.onText)
@@ -142,18 +150,13 @@ func (tc *TelegramChannel) onText(c tele.Context) error {
 		return nil
 	}
 
-	ctx := c.Get("ctx_context")
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	convID := telegramConversationID(c.Chat().ID)
 	session := tc.sessionManager.GetOrCreate("telegram", convID)
 
 	tc.notifyHandler(convID, c.Text(), c.Sender())
 
 	prompt := "[Channel: Telegram] " + c.Text()
-	resp, err := tc.engine.Send(ctx.(context.Context), session, prompt)
+	resp, err := tc.engine.Send(tc.ctx, session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -191,7 +194,7 @@ func (tc *TelegramChannel) onDocument(c tele.Context) error {
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text
-	resp, err := tc.engine.Send(context.Background(), session, prompt)
+	resp, err := tc.engine.Send(tc.ctx, session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -230,7 +233,7 @@ func (tc *TelegramChannel) onPhoto(c tele.Context) error {
 	tc.notifyHandler(convID, text, c.Sender())
 
 	prompt := "[Channel: Telegram] " + text
-	resp, err := tc.engine.Send(context.Background(), session, prompt)
+	resp, err := tc.engine.Send(tc.ctx, session, prompt)
 	if err != nil {
 		return c.Send("Error: " + err.Error())
 	}
@@ -323,7 +326,7 @@ func (tc *TelegramChannel) notifyHandler(convID, text string, sender *tele.User)
 		senderID = strconv.FormatInt(sender.ID, 10)
 	}
 
-	h(context.Background(), types.InboundMessage{
+	h(tc.ctx, types.InboundMessage{
 		ConversationID: convID,
 		SenderID:       senderID,
 		Text:           text,

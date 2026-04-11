@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/DonScott603/gogoclaw/internal/memory"
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -30,9 +31,9 @@ func (NoOpSummarizer) MaybeSummarize(context.Context, []provider.Message, string
 // PersistenceHook is called by the Engine at the right moments to persist
 // messages. SessionManager implements this interface; Engine controls timing.
 type PersistenceHook interface {
-	OnUserMessage(session *Session, msg provider.Message)
-	OnAssistantMessageComplete(session *Session, msg provider.Message)
-	OnToolMessage(session *Session, msg provider.Message)
+	OnUserMessage(ctx context.Context, session *Session, msg provider.Message)
+	OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message)
+	OnToolMessage(ctx context.Context, session *Session, msg provider.Message)
 }
 
 // Engine is the core agent orchestrator. It is a stateless executor that
@@ -44,6 +45,7 @@ type Engine struct {
 	assembler    *ContextAssembler
 	summarizer   Summarizer
 	systemPrompt string
+	promptMu     sync.RWMutex // protects systemPrompt
 	persistence  PersistenceHook
 }
 
@@ -84,7 +86,7 @@ func (e *Engine) Send(ctx context.Context, session *Session, userMessage string)
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	session.AppendMessage(userMsg)
 	if e.persistence != nil {
-		e.persistence.OnUserMessage(session, userMsg)
+		e.persistence.OnUserMessage(ctx, session, userMsg)
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -98,7 +100,7 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	session.AppendMessage(userMsg)
 	if e.persistence != nil {
-		e.persistence.OnUserMessage(session, userMsg)
+		e.persistence.OnUserMessage(ctx, session, userMsg)
 	}
 
 	e.maybeSummarize(ctx, session)
@@ -134,7 +136,7 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(session, assistantMsg)
+				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
 			}
 
 			if err := e.dispatchToolCalls(ctx, session, toolCalls); err != nil {
@@ -153,7 +155,7 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			assistantMsg := provider.Message{Role: "assistant", Content: fullContent}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(session, assistantMsg)
+				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
 			}
 		}
 	}()
@@ -166,19 +168,25 @@ func (e *Engine) ProviderName() string {
 	return e.provider.Name()
 }
 
-// SetSystemPrompt updates the engine's system prompt.
+// SetSystemPrompt updates the engine's system prompt (thread-safe).
 func (e *Engine) SetSystemPrompt(prompt string) {
+	e.promptMu.Lock()
+	defer e.promptMu.Unlock()
 	e.systemPrompt = prompt
 }
 
 func (e *Engine) buildMessages(session *Session) []provider.Message {
+	e.promptMu.RLock()
+	prompt := e.systemPrompt
+	e.promptMu.RUnlock()
+
 	history := session.GetHistory()
 	if e.assembler != nil {
-		return e.assembler.Assemble(e.systemPrompt, history, 500) // ~500 tokens for tool defs
+		return e.assembler.Assemble(prompt, history, 500) // ~500 tokens for tool defs
 	}
 	msgs := make([]provider.Message, 0, len(history)+1)
-	if e.systemPrompt != "" {
-		msgs = append(msgs, provider.Message{Role: "system", Content: e.systemPrompt})
+	if prompt != "" {
+		msgs = append(msgs, provider.Message{Role: "system", Content: prompt})
 	}
 	msgs = append(msgs, history...)
 	return msgs
@@ -226,7 +234,7 @@ func (e *Engine) dispatchToolCalls(ctx context.Context, session *Session, toolCa
 		}
 		session.AppendMessage(toolMsg)
 		if e.persistence != nil {
-			e.persistence.OnToolMessage(session, toolMsg)
+			e.persistence.OnToolMessage(ctx, session, toolMsg)
 		}
 	}
 
@@ -250,7 +258,7 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 			assistantMsg := provider.Message{Role: "assistant", Content: resp.Content}
 			session.AppendMessage(assistantMsg)
 			if e.persistence != nil {
-				e.persistence.OnAssistantMessageComplete(session, assistantMsg)
+				e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
 			}
 			return resp.Content, nil
 		}
@@ -262,7 +270,7 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 		}
 		session.AppendMessage(assistantMsg)
 		if e.persistence != nil {
-			e.persistence.OnAssistantMessageComplete(session, assistantMsg)
+			e.persistence.OnAssistantMessageComplete(ctx, session, assistantMsg)
 		}
 
 		if err := e.dispatchToolCalls(ctx, session, resp.ToolCalls); err != nil {

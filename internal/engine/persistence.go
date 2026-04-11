@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"log"
 	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -14,27 +16,37 @@ import (
 var _ PersistenceHook = (*SessionManager)(nil)
 
 // OnUserMessage persists a user message to SQLite.
-func (sm *SessionManager) OnUserMessage(session *Session, msg provider.Message) {
-	sm.persistMessage(session, msg)
+func (sm *SessionManager) OnUserMessage(ctx context.Context, session *Session, msg provider.Message) {
+	sm.persistMessage(ctx, session, msg)
 }
 
 // OnAssistantMessageComplete persists a completed assistant message to SQLite.
-func (sm *SessionManager) OnAssistantMessageComplete(session *Session, msg provider.Message) {
-	sm.persistMessage(session, msg)
+func (sm *SessionManager) OnAssistantMessageComplete(ctx context.Context, session *Session, msg provider.Message) {
+	sm.persistMessage(ctx, session, msg)
 }
 
 // OnToolMessage persists a tool result message to SQLite.
-func (sm *SessionManager) OnToolMessage(session *Session, msg provider.Message) {
-	sm.persistMessage(session, msg)
+func (sm *SessionManager) OnToolMessage(ctx context.Context, session *Session, msg provider.Message) {
+	sm.persistMessage(ctx, session, msg)
 }
 
-func (sm *SessionManager) persistMessage(session *Session, msg provider.Message) {
+// generateMessageID returns a random hex string suitable for use as a
+// unique message primary key. Using crypto/rand avoids collisions that
+// would occur with timestamp-based IDs when tool calls are dispatched
+// in parallel.
+func generateMessageID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (sm *SessionManager) persistMessage(ctx context.Context, session *Session, msg provider.Message) {
 	if sm.store == nil {
 		return
 	}
 
 	stored := storage.StoredMessage{
-		ID:             fmt.Sprintf("%s-%d", session.ConversationID, time.Now().UnixNano()),
+		ID:             generateMessageID(),
 		ConversationID: session.ConversationID,
 		Role:           msg.Role,
 		Content:        msg.Content,
@@ -49,32 +61,47 @@ func (sm *SessionManager) persistMessage(session *Session, msg provider.Message)
 	}
 
 	// Ensure the conversation exists before adding messages.
-	sm.ensureConversation(session)
+	sm.ensureConversation(ctx, session)
 
-	if err := sm.store.AddMessage(context.Background(), stored); err != nil {
-		// Log but don't fail — persistence is best-effort in this path.
-		// Future: add structured logging.
-		_ = err
+	if err := sm.store.AddMessage(ctx, stored); err != nil {
+		log.Printf("persistence: failed to write %s message for conversation %s: %v",
+			msg.Role, session.ConversationID, err)
 	}
 }
 
-func (sm *SessionManager) ensureConversation(session *Session) {
+func (sm *SessionManager) ensureConversation(ctx context.Context, session *Session) {
 	if sm.store == nil {
 		return
 	}
 
-	ctx := context.Background()
-	existing, err := sm.store.GetConversation(ctx, session.ConversationID)
-	if err != nil || existing != nil {
+	sm.mu.RLock()
+	known := sm.knownConversations[session.ConversationID]
+	sm.mu.RUnlock()
+	if known {
 		return
 	}
 
-	now := time.Now()
-	sm.store.CreateConversation(ctx, storage.Conversation{
-		ID:        session.ConversationID,
-		Title:     "Conversation",
-		Agent:     session.AgentProfile,
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	existing, err := sm.store.GetConversation(ctx, session.ConversationID)
+	if err != nil {
+		log.Printf("persistence: failed to check conversation %s: %v", session.ConversationID, err)
+		return
+	}
+
+	if existing == nil {
+		now := time.Now()
+		if err := sm.store.CreateConversation(ctx, storage.Conversation{
+			ID:        session.ConversationID,
+			Title:     "Conversation",
+			Agent:     session.AgentProfile,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			log.Printf("persistence: failed to create conversation %s: %v", session.ConversationID, err)
+			return
+		}
+	}
+
+	sm.mu.Lock()
+	sm.knownConversations[session.ConversationID] = true
+	sm.mu.Unlock()
 }
