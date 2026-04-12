@@ -6,6 +6,7 @@ import (
 
 	"github.com/DonScott603/gogoclaw/internal/audit"
 	"github.com/DonScott603/gogoclaw/internal/config"
+	"github.com/DonScott603/gogoclaw/internal/storage"
 	"github.com/DonScott603/gogoclaw/internal/util"
 )
 
@@ -29,4 +30,13 @@ func InitAudit(cfg *config.Config, configDir string) AuditDeps {
 		logger, _ = audit.NewLogger(audit.LoggerConfig{Enabled: false})
 	}
 	return AuditDeps{Logger: logger}
+}
+
+// EnableAuditEncryption sets the encryptor on the audit logger if audit
+// encryption is enabled in config.
+func EnableAuditEncryption(cfg *config.Config, auditDeps AuditDeps, enc *storage.Encryptor) {
+	if cfg.Logging.Audit.Encrypt && enc != nil {
+		auditDeps.Logger.SetEncryptor(enc)
+		log.Printf("audit: log encryption enabled")
+	}
 }

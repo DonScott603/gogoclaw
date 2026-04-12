@@ -27,6 +27,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
+		fmt.Println("Key rotation is not yet implemented (planned for a future phase).")
+		os.Exit(0)
+	}
+
 	// Set up graceful shutdown via signal.NotifyContext.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -56,11 +61,14 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	storeDeps, err := app.InitStorage(cfg, configDir, secDeps, auditDeps)
+	storeDeps, err := app.InitStorage(ctx, cfg, configDir, secDeps, auditDeps)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 	defer storeDeps.Store.Close()
+
+	// Wire audit encryption after storage init provides the encryptor.
+	app.EnableAuditEncryption(cfg, auditDeps, storeDeps.Encryptor)
 
 	memDeps := app.InitMemory(cfg, configDir, secDeps.ActiveProvider)
 	defer memDeps.Close()

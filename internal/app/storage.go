@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -15,10 +17,13 @@ import (
 type StorageDeps struct {
 	Workspace *engine.Workspace
 	Store     *storage.Store
+	Encryptor *storage.Encryptor
 }
 
 // InitStorage sets up the workspace and conversation store.
-func InitStorage(cfg *config.Config, configDir string, secDeps SecurityDeps, auditDeps AuditDeps) (StorageDeps, error) {
+// If encryption is enabled in config, it derives/loads a master key and
+// migrates any existing plaintext messages.
+func InitStorage(ctx context.Context, cfg *config.Config, configDir string, secDeps SecurityDeps, auditDeps AuditDeps) (StorageDeps, error) {
 	ws, err := engine.NewWorkspace(cfg.Workspace)
 	if err != nil {
 		return StorageDeps{}, fmt.Errorf("workspace: %w", err)
@@ -39,5 +44,50 @@ func InitStorage(cfg *config.Config, configDir string, secDeps SecurityDeps, aud
 	}
 	store.SetScrubber(secDeps.Scrubber, onScrub)
 
-	return StorageDeps{Workspace: ws, Store: store}, nil
+	var enc *storage.Encryptor
+
+	if cfg.Storage.Conversations.Encrypt {
+		var source string
+
+		passphraseEnv := cfg.Storage.Conversations.PassphraseEnv
+		if passphraseEnv == "" {
+			passphraseEnv = "GOGOCLAW_DB_PASSPHRASE"
+		}
+
+		if passphrase := os.Getenv(passphraseEnv); passphrase != "" {
+			saltPath := filepath.Join(configDir, "data", ".encryption_salt")
+			salt, err := storage.LoadOrCreateSalt(saltPath)
+			if err != nil {
+				return StorageDeps{}, fmt.Errorf("storage: encryption salt: %w", err)
+			}
+			enc, err = storage.NewEncryptorFromPassphrase(passphrase, salt)
+			if err != nil {
+				return StorageDeps{}, fmt.Errorf("storage: encryption key derivation: %w", err)
+			}
+			source = "passphrase"
+		} else {
+			keyPath := filepath.Join(configDir, "data", ".encryption_key")
+			key, err := storage.LoadOrCreateKey(keyPath)
+			if err != nil {
+				return StorageDeps{}, fmt.Errorf("storage: encryption key: %w", err)
+			}
+			enc, err = storage.NewEncryptorFromKey(key)
+			if err != nil {
+				return StorageDeps{}, fmt.Errorf("storage: encryptor: %w", err)
+			}
+			source = "auto-key"
+			log.Printf("WARNING: using auto-generated encryption key at %s", keyPath)
+			log.Printf("WARNING: losing this file will make encrypted conversations and audit logs unrecoverable")
+		}
+
+		store.SetEncryptor(enc)
+		log.Printf("storage: encryption enabled (source: %s)", source)
+
+		// Migrate existing plaintext messages.
+		if err := store.MigrateToEncrypted(ctx); err != nil {
+			return StorageDeps{}, fmt.Errorf("storage: encryption migration: %w", err)
+		}
+	}
+
+	return StorageDeps{Workspace: ws, Store: store, Encryptor: enc}, nil
 }

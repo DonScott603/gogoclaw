@@ -3,13 +3,17 @@
 package audit
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/DonScott603/gogoclaw/internal/storage"
 )
 
 // EventType identifies the kind of audit event.
@@ -42,11 +46,20 @@ type Scrubber interface {
 
 // Logger writes structured audit events as JSON Lines.
 type Logger struct {
-	mu       sync.Mutex
-	writer   io.Writer
-	closer   io.Closer
-	enabled  bool
-	scrubber Scrubber
+	mu        sync.Mutex
+	writer    io.Writer
+	closer    io.Closer
+	enabled   bool
+	scrubber  Scrubber
+	encryptor *storage.Encryptor
+}
+
+// SetEncryptor attaches an encryptor for at-rest audit log encryption.
+// When set, each log line is encrypted and written as enc:v1:<base64>.
+func (l *Logger) SetEncryptor(enc *storage.Encryptor) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.encryptor = enc
 }
 
 // LoggerConfig configures the audit logger.
@@ -115,6 +128,17 @@ func (l *Logger) Log(eventType EventType, fields map[string]string) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.encryptor != nil {
+		ct, encErr := l.encryptor.Encrypt(data, nil)
+		if encErr != nil {
+			return
+		}
+		encoded := base64.StdEncoding.EncodeToString(ct)
+		l.writer.Write([]byte("enc:v1:" + encoded + "\n"))
+		return
+	}
+
 	l.writer.Write(data)
 	l.writer.Write([]byte("\n"))
 }
@@ -169,6 +193,30 @@ func (l *Logger) LogSecretScrubbed(component, context string) {
 		"component": component,
 		"context":   context,
 	})
+}
+
+// DecryptAuditLine decrypts an encrypted audit log line.
+// The line MUST have the "enc:v1:" prefix — plaintext lines are rejected
+// with an error (strict mode).
+func DecryptAuditLine(line []byte, enc *storage.Encryptor) (*Event, error) {
+	s := strings.TrimSpace(string(line))
+	if !strings.HasPrefix(s, "enc:v1:") {
+		return nil, fmt.Errorf("audit: decrypt: missing enc:v1: prefix")
+	}
+	encoded := s[len("enc:v1:"):]
+	ct, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("audit: decrypt: base64 decode: %w", err)
+	}
+	plaintext, err := enc.Decrypt(ct, nil)
+	if err != nil {
+		return nil, fmt.Errorf("audit: decrypt: %w", err)
+	}
+	var e Event
+	if err := json.Unmarshal(plaintext, &e); err != nil {
+		return nil, fmt.Errorf("audit: decrypt: unmarshal event: %w", err)
+	}
+	return &e, nil
 }
 
 // Close closes the underlying file if applicable.

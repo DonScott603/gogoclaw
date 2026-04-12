@@ -38,8 +38,8 @@ func TestMigrationRunnerFreshDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema_version query: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("schema version = %d, want 2", version)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestMigrationRunnerExistingDB(t *testing.T) {
 	}
 	db.Close()
 
-	// Open with NewStore — should skip migration 1 since already at version 1.
+	// Open with NewStore — should skip migration 1, run migration 2.
 	store, err := NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewStore on existing v1 DB: %v", err)
@@ -92,8 +92,8 @@ func TestMigrationRunnerExistingDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema_version query: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("schema version = %d, want 1 (unchanged)", version)
+	if version != 2 {
+		t.Errorf("schema version = %d, want 2 (after migration 2)", version)
 	}
 }
 
@@ -120,11 +120,11 @@ func TestMigrationRunnerRollback(t *testing.T) {
 		t.Fatalf("initial migration: %v", err)
 	}
 
-	// Verify we're at version 1.
+	// Verify we're at version 2.
 	var version int
 	store.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version)
-	if version != 1 {
-		t.Fatalf("expected version 1, got %d", version)
+	if version != 2 {
+		t.Fatalf("expected version 2, got %d", version)
 	}
 
 	// Verify tables exist after migration.
@@ -136,4 +136,40 @@ func TestMigrationRunnerRollback(t *testing.T) {
 
 	_ = origMigrations
 	store.Close()
+}
+
+func TestMigration2AddsEncryptedColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "m2.db")
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Verify encrypted column exists via PRAGMA table_info.
+	rows, err := store.db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, typeName string
+		var notNull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &dfltValue, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "encrypted" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("encrypted column not found in messages table")
+	}
 }

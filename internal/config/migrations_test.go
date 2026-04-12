@@ -46,8 +46,8 @@ func TestConfigMigrationStampsVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("config_version not found in migrated config")
 	}
-	if version, ok := v.(int); !ok || version != 1 {
-		t.Errorf("config_version = %v, want 1", v)
+	if version, ok := v.(int); !ok || version != 2 {
+		t.Errorf("config_version = %v, want 2", v)
 	}
 
 	// Verify backup was created.
@@ -61,8 +61,8 @@ func TestConfigMigrationAlreadyCurrent(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 
-	// Write a v1 config.
-	data := []byte("config_version: 1\nlogging:\n  level: debug\n")
+	// Write a v2 config.
+	data := []byte("config_version: 2\nlogging:\n  level: debug\n")
 	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestConfigMigrationAlreadyCurrent(t *testing.T) {
 	}
 
 	// No backup should be created for already-current config.
-	backupPath := configPath + ".bak.v1"
+	backupPath := configPath + ".bak.v2"
 	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
 		t.Error("backup should not be created when config is already current")
 	}

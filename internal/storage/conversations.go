@@ -4,8 +4,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -22,9 +24,16 @@ type ScrubNotifyFn func(component, context string)
 
 // Store provides conversation and message persistence via SQLite.
 type Store struct {
-	db       *sql.DB
-	scrubber Scrubber
-	onScrub  ScrubNotifyFn
+	db        *sql.DB
+	scrubber  Scrubber
+	onScrub   ScrubNotifyFn
+	encryptor *Encryptor
+}
+
+// SetEncryptor attaches an encryptor for transparent at-rest encryption
+// of message content and tool_calls.
+func (s *Store) SetEncryptor(enc *Encryptor) {
+	s.encryptor = enc
 }
 
 // Conversation represents a stored conversation.
@@ -174,6 +183,7 @@ func (s *Store) DeleteConversation(ctx context.Context, id string) error {
 
 // AddMessage inserts a message into a conversation.
 // If a scrubber is configured, message content is scrubbed before persistence.
+// If an encryptor is set, content and tool_calls are encrypted transparently.
 func (s *Store) AddMessage(ctx context.Context, m StoredMessage) error {
 	// Scrub secrets from message content before persisting.
 	if s.scrubber != nil && s.scrubber.HasSecrets(m.Content) {
@@ -183,14 +193,36 @@ func (s *Store) AddMessage(ctx context.Context, m StoredMessage) error {
 		}
 	}
 
+	content := m.Content
 	toolCallsJSON := ""
 	if m.ToolCalls != nil {
 		toolCallsJSON = string(m.ToolCalls)
 	}
+	encrypted := 0
+
+	if s.encryptor != nil {
+		aad := BuildMessageAAD(m.ID, m.ConversationID, m.Role)
+
+		ct, err := s.encryptor.Encrypt([]byte(content), aad)
+		if err != nil {
+			return fmt.Errorf("storage: encrypt content: %w", err)
+		}
+		content = base64.StdEncoding.EncodeToString(ct)
+
+		if len(m.ToolCalls) > 0 {
+			tcCt, err := s.encryptor.Encrypt(m.ToolCalls, aad)
+			if err != nil {
+				return fmt.Errorf("storage: encrypt tool_calls: %w", err)
+			}
+			toolCallsJSON = base64.StdEncoding.EncodeToString(tcCt)
+		}
+		encrypted = 1
+	}
+
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, m.Role, m.Content, toolCallsJSON, m.ToolCallID, m.TokenCount, m.CreatedAt,
+		`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at, encrypted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, content, toolCallsJSON, m.ToolCallID, m.TokenCount, m.CreatedAt, encrypted,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: add message: %w", err)
@@ -202,9 +234,10 @@ func (s *Store) AddMessage(ctx context.Context, m StoredMessage) error {
 }
 
 // GetMessages retrieves all messages for a conversation in chronological order.
+// Encrypted messages are decrypted transparently when an encryptor is set.
 func (s *Store) GetMessages(ctx context.Context, conversationID string) ([]StoredMessage, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at
+		`SELECT id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at, encrypted
 		 FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`, conversationID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get messages: %w", err)
@@ -215,12 +248,41 @@ func (s *Store) GetMessages(ctx context.Context, conversationID string) ([]Store
 	for rows.Next() {
 		var m StoredMessage
 		var toolCalls string
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &toolCalls, &m.ToolCallID, &m.TokenCount, &m.CreatedAt); err != nil {
+		var encryptedFlag int
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &toolCalls, &m.ToolCallID, &m.TokenCount, &m.CreatedAt, &encryptedFlag); err != nil {
 			return nil, fmt.Errorf("storage: scan message: %w", err)
 		}
-		if toolCalls != "" {
-			m.ToolCalls = json.RawMessage(toolCalls)
+
+		if encryptedFlag == 1 && s.encryptor != nil {
+			aad := BuildMessageAAD(m.ID, m.ConversationID, m.Role)
+
+			contentCt, err := base64.StdEncoding.DecodeString(m.Content)
+			if err != nil {
+				return nil, fmt.Errorf("storage: decode encrypted content for message %s: %w", m.ID, err)
+			}
+			plainContent, err := s.encryptor.Decrypt(contentCt, aad)
+			if err != nil {
+				return nil, fmt.Errorf("storage: decrypt content for message %s: %w", m.ID, err)
+			}
+			m.Content = string(plainContent)
+
+			if toolCalls != "" {
+				tcCt, err := base64.StdEncoding.DecodeString(toolCalls)
+				if err != nil {
+					return nil, fmt.Errorf("storage: decode encrypted tool_calls for message %s: %w", m.ID, err)
+				}
+				plainTC, err := s.encryptor.Decrypt(tcCt, aad)
+				if err != nil {
+					return nil, fmt.Errorf("storage: decrypt tool_calls for message %s: %w", m.ID, err)
+				}
+				m.ToolCalls = json.RawMessage(plainTC)
+			}
+		} else {
+			if toolCalls != "" {
+				m.ToolCalls = json.RawMessage(toolCalls)
+			}
 		}
+
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
@@ -262,14 +324,36 @@ func (s *Store) EnsureConversationAndAddMessage(ctx context.Context, conv Conver
 		}
 	}
 
+	content := m.Content
 	toolCallsJSON := ""
 	if m.ToolCalls != nil {
 		toolCallsJSON = string(m.ToolCalls)
 	}
+	encrypted := 0
+
+	if s.encryptor != nil {
+		aad := BuildMessageAAD(m.ID, m.ConversationID, m.Role)
+
+		ct, encErr := s.encryptor.Encrypt([]byte(content), aad)
+		if encErr != nil {
+			return fmt.Errorf("storage: encrypt content: %w", encErr)
+		}
+		content = base64.StdEncoding.EncodeToString(ct)
+
+		if len(m.ToolCalls) > 0 {
+			tcCt, encErr := s.encryptor.Encrypt(m.ToolCalls, aad)
+			if encErr != nil {
+				return fmt.Errorf("storage: encrypt tool_calls: %w", encErr)
+			}
+			toolCallsJSON = base64.StdEncoding.EncodeToString(tcCt)
+		}
+		encrypted = 1
+	}
+
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, m.Role, m.Content, toolCallsJSON, m.ToolCallID, m.TokenCount, m.CreatedAt,
+		`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at, encrypted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, content, toolCallsJSON, m.ToolCallID, m.TokenCount, m.CreatedAt, encrypted,
 	); err != nil {
 		return fmt.Errorf("storage: add message: %w", err)
 	}
@@ -297,4 +381,104 @@ func (s *Store) MessageCount(ctx context.Context, conversationID string) (int, e
 		return 0, fmt.Errorf("storage: count messages: %w", err)
 	}
 	return count, nil
+}
+
+// MigrateToEncrypted encrypts all plaintext messages (encrypted = 0) in place.
+// It processes rows in batches of 100 ordered by created_at ASC. Each batch
+// runs in its own transaction. The migration is idempotent — already-encrypted
+// rows are skipped. Stops on first failure.
+func (s *Store) MigrateToEncrypted(ctx context.Context) error {
+	if s.encryptor == nil {
+		return fmt.Errorf("storage: migrate to encrypted: no encryptor set")
+	}
+
+	const batchSize = 100
+	totalMigrated := 0
+
+	for {
+		// Count remaining unencrypted rows.
+		var remaining int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM messages WHERE encrypted = 0`,
+		).Scan(&remaining); err != nil {
+			return fmt.Errorf("storage: count unencrypted messages: %w", err)
+		}
+		if remaining == 0 {
+			break
+		}
+
+		// Fetch a batch of unencrypted messages.
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, conversation_id, role, content, tool_calls
+			 FROM messages WHERE encrypted = 0
+			 ORDER BY created_at ASC LIMIT ?`, batchSize)
+		if err != nil {
+			return fmt.Errorf("storage: query unencrypted messages: %w", err)
+		}
+
+		type rowData struct {
+			id, convID, role, content, toolCalls string
+		}
+		var batch []rowData
+		for rows.Next() {
+			var r rowData
+			if err := rows.Scan(&r.id, &r.convID, &r.role, &r.content, &r.toolCalls); err != nil {
+				rows.Close()
+				return fmt.Errorf("storage: scan unencrypted message: %w", err)
+			}
+			batch = append(batch, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("storage: iterate unencrypted messages: %w", err)
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		// Encrypt the batch in a transaction.
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("storage: begin encrypt migration tx: %w", err)
+		}
+
+		for _, r := range batch {
+			aad := BuildMessageAAD(r.id, r.convID, r.role)
+
+			contentCt, err := s.encryptor.Encrypt([]byte(r.content), aad)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("storage: encrypt migration: message %s: content: %w", r.id, err)
+			}
+			encContent := base64.StdEncoding.EncodeToString(contentCt)
+
+			encToolCalls := ""
+			if r.toolCalls != "" {
+				tcCt, err := s.encryptor.Encrypt([]byte(r.toolCalls), aad)
+				if err != nil {
+					tx.Rollback()
+					return fmt.Errorf("storage: encrypt migration: message %s: tool_calls: %w", r.id, err)
+				}
+				encToolCalls = base64.StdEncoding.EncodeToString(tcCt)
+			}
+
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE messages SET content = ?, tool_calls = ?, encrypted = 1 WHERE id = ? AND encrypted = 0`,
+				encContent, encToolCalls, r.id,
+			); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("storage: encrypt migration: update message %s: %w", r.id, err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("storage: commit encrypt migration: %w", err)
+		}
+
+		totalMigrated += len(batch)
+		log.Printf("storage: encrypted %d messages (%d remaining)", totalMigrated, remaining-len(batch))
+	}
+
+	return nil
 }
