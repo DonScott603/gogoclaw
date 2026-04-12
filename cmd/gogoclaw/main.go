@@ -27,6 +27,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
+		fmt.Println("Key rotation is not yet implemented (planned for a future phase).")
+		os.Exit(0)
+	}
+
 	// Set up graceful shutdown via signal.NotifyContext.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -47,8 +52,14 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Resolve encryption key early so audit logger is encrypted from first event.
+	enc, err := app.ResolveEncryptor(cfg, configDir)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
 	// Initialize subsystems.
-	auditDeps := app.InitAudit(cfg, configDir)
+	auditDeps := app.InitAudit(cfg, configDir, enc)
 	defer auditDeps.Logger.Close()
 
 	secDeps, err := app.InitSecurity(cfg, auditDeps, configDir)
@@ -56,7 +67,7 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	storeDeps, err := app.InitStorage(cfg, configDir, secDeps, auditDeps)
+	storeDeps, err := app.InitStorage(ctx, cfg, configDir, secDeps, auditDeps, enc)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

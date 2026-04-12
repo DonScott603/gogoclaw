@@ -27,6 +27,14 @@ func configMigrations() []ConfigMigration {
 				return nil
 			},
 		},
+		{
+			Version:     2,
+			Description: "Stamp version for encryption support",
+			Migrate: func(raw map[string]interface{}) error {
+				raw["config_version"] = 2
+				return nil
+			},
+		},
 	}
 }
 

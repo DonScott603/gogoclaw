@@ -45,6 +45,14 @@ func allMigrations() []migration {
 				return err
 			},
 		},
+		{
+			version:     2,
+			description: "Add encryption metadata to messages",
+			fn: func(tx *sql.Tx) error {
+				_, err := tx.Exec(`ALTER TABLE messages ADD COLUMN encrypted BOOLEAN NOT NULL DEFAULT 0;`)
+				return err
+			},
+		},
 	}
 }
 
