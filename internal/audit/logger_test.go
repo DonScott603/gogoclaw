@@ -201,6 +201,41 @@ func TestMixedAuditLines(t *testing.T) {
 	}
 }
 
+func TestEncryptorFromFirstEvent(t *testing.T) {
+	// Simulates the fixed startup path: encryptor attached before first event.
+	var buf bytes.Buffer
+	l := NewLoggerFromWriter(&buf)
+	enc := newTestEncryptor(t)
+
+	// Attach encryptor BEFORE any events are logged — this is the invariant.
+	l.SetEncryptor(enc)
+
+	// Emit events that would happen during startup.
+	l.Log(EventConfigChanged, map[string]string{"change": "security init"})
+	l.Log(EventToolCall, map[string]string{"tool": "startup_check"})
+	l.Log(EventLLMRequest, map[string]string{"provider": "test", "model": "test"})
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+
+	// ALL lines must be encrypted — no plaintext leakage.
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "enc:v1:") {
+			t.Errorf("line %d is plaintext, expected encrypted: %q", i, line[:min(40, len(line))])
+		}
+		// Verify decryptable.
+		e, err := DecryptAuditLine([]byte(line), enc)
+		if err != nil {
+			t.Errorf("line %d: DecryptAuditLine: %v", i, err)
+		}
+		if e.Timestamp.IsZero() {
+			t.Errorf("line %d: timestamp is zero", i)
+		}
+	}
+}
+
 func TestLoggerToFile(t *testing.T) {
 	path := t.TempDir() + "/audit.jsonl"
 	l, err := NewLogger(LoggerConfig{Enabled: true, Path: path})

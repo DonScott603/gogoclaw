@@ -20,10 +20,53 @@ type StorageDeps struct {
 	Encryptor *storage.Encryptor
 }
 
+// ResolveEncryptor resolves the encryption key from config without creating
+// a store or running migrations. Call this early in startup so the encryptor
+// is available before any audit events are emitted.
+// Returns nil (no error) when encryption is not enabled.
+func ResolveEncryptor(cfg *config.Config, configDir string) (*storage.Encryptor, error) {
+	if !cfg.Storage.Conversations.Encrypt {
+		return nil, nil
+	}
+
+	passphraseEnv := cfg.Storage.Conversations.PassphraseEnv
+	if passphraseEnv == "" {
+		passphraseEnv = "GOGOCLAW_DB_PASSPHRASE"
+	}
+
+	if passphrase := os.Getenv(passphraseEnv); passphrase != "" {
+		saltPath := filepath.Join(configDir, "data", ".encryption_salt")
+		salt, err := storage.LoadOrCreateSalt(saltPath)
+		if err != nil {
+			return nil, fmt.Errorf("storage: encryption salt: %w", err)
+		}
+		enc, err := storage.NewEncryptorFromPassphrase(passphrase, salt)
+		if err != nil {
+			return nil, fmt.Errorf("storage: encryption key derivation: %w", err)
+		}
+		log.Printf("storage: encryption enabled (source: passphrase)")
+		return enc, nil
+	}
+
+	keyPath := filepath.Join(configDir, "data", ".encryption_key")
+	key, err := storage.LoadOrCreateKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("storage: encryption key: %w", err)
+	}
+	enc, err := storage.NewEncryptorFromKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("storage: encryptor: %w", err)
+	}
+	log.Printf("WARNING: using auto-generated encryption key at %s", keyPath)
+	log.Printf("WARNING: losing this file will make encrypted conversations and audit logs unrecoverable")
+	log.Printf("storage: encryption enabled (source: auto-key)")
+	return enc, nil
+}
+
 // InitStorage sets up the workspace and conversation store.
-// If encryption is enabled in config, it derives/loads a master key and
-// migrates any existing plaintext messages.
-func InitStorage(ctx context.Context, cfg *config.Config, configDir string, secDeps SecurityDeps, auditDeps AuditDeps) (StorageDeps, error) {
+// If enc is non-nil, it is attached to the store and existing plaintext
+// messages are migrated.
+func InitStorage(ctx context.Context, cfg *config.Config, configDir string, secDeps SecurityDeps, auditDeps AuditDeps, enc *storage.Encryptor) (StorageDeps, error) {
 	ws, err := engine.NewWorkspace(cfg.Workspace)
 	if err != nil {
 		return StorageDeps{}, fmt.Errorf("workspace: %w", err)
@@ -44,44 +87,8 @@ func InitStorage(ctx context.Context, cfg *config.Config, configDir string, secD
 	}
 	store.SetScrubber(secDeps.Scrubber, onScrub)
 
-	var enc *storage.Encryptor
-
-	if cfg.Storage.Conversations.Encrypt {
-		var source string
-
-		passphraseEnv := cfg.Storage.Conversations.PassphraseEnv
-		if passphraseEnv == "" {
-			passphraseEnv = "GOGOCLAW_DB_PASSPHRASE"
-		}
-
-		if passphrase := os.Getenv(passphraseEnv); passphrase != "" {
-			saltPath := filepath.Join(configDir, "data", ".encryption_salt")
-			salt, err := storage.LoadOrCreateSalt(saltPath)
-			if err != nil {
-				return StorageDeps{}, fmt.Errorf("storage: encryption salt: %w", err)
-			}
-			enc, err = storage.NewEncryptorFromPassphrase(passphrase, salt)
-			if err != nil {
-				return StorageDeps{}, fmt.Errorf("storage: encryption key derivation: %w", err)
-			}
-			source = "passphrase"
-		} else {
-			keyPath := filepath.Join(configDir, "data", ".encryption_key")
-			key, err := storage.LoadOrCreateKey(keyPath)
-			if err != nil {
-				return StorageDeps{}, fmt.Errorf("storage: encryption key: %w", err)
-			}
-			enc, err = storage.NewEncryptorFromKey(key)
-			if err != nil {
-				return StorageDeps{}, fmt.Errorf("storage: encryptor: %w", err)
-			}
-			source = "auto-key"
-			log.Printf("WARNING: using auto-generated encryption key at %s", keyPath)
-			log.Printf("WARNING: losing this file will make encrypted conversations and audit logs unrecoverable")
-		}
-
+	if enc != nil {
 		store.SetEncryptor(enc)
-		log.Printf("storage: encryption enabled (source: %s)", source)
 
 		// Migrate existing plaintext messages.
 		if err := store.MigrateToEncrypted(ctx); err != nil {

@@ -16,7 +16,9 @@ type AuditDeps struct {
 }
 
 // InitAudit creates and configures the audit logger.
-func InitAudit(cfg *config.Config, configDir string) AuditDeps {
+// If enc is non-nil and audit encryption is enabled in config, the logger
+// encrypts each log line at rest from the very first event.
+func InitAudit(cfg *config.Config, configDir string, enc *storage.Encryptor) AuditDeps {
 	auditPath := util.ExpandHome(cfg.Logging.Audit.Path)
 	if auditPath == "" {
 		auditPath = filepath.Join(configDir, "audit", "gogoclaw.jsonl")
@@ -29,14 +31,11 @@ func InitAudit(cfg *config.Config, configDir string) AuditDeps {
 		log.Printf("audit: failed to initialize: %v (continuing without audit)", err)
 		logger, _ = audit.NewLogger(audit.LoggerConfig{Enabled: false})
 	}
-	return AuditDeps{Logger: logger}
-}
 
-// EnableAuditEncryption sets the encryptor on the audit logger if audit
-// encryption is enabled in config.
-func EnableAuditEncryption(cfg *config.Config, auditDeps AuditDeps, enc *storage.Encryptor) {
 	if cfg.Logging.Audit.Encrypt && enc != nil {
-		auditDeps.Logger.SetEncryptor(enc)
+		logger.SetEncryptor(enc)
 		log.Printf("audit: log encryption enabled")
 	}
+
+	return AuditDeps{Logger: logger}
 }

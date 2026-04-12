@@ -52,8 +52,14 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Resolve encryption key early so audit logger is encrypted from first event.
+	enc, err := app.ResolveEncryptor(cfg, configDir)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
 	// Initialize subsystems.
-	auditDeps := app.InitAudit(cfg, configDir)
+	auditDeps := app.InitAudit(cfg, configDir, enc)
 	defer auditDeps.Logger.Close()
 
 	secDeps, err := app.InitSecurity(cfg, auditDeps, configDir)
@@ -61,14 +67,11 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	storeDeps, err := app.InitStorage(ctx, cfg, configDir, secDeps, auditDeps)
+	storeDeps, err := app.InitStorage(ctx, cfg, configDir, secDeps, auditDeps, enc)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 	defer storeDeps.Store.Close()
-
-	// Wire audit encryption after storage init provides the encryptor.
-	app.EnableAuditEncryption(cfg, auditDeps, storeDeps.Encryptor)
 
 	memDeps := app.InitMemory(cfg, configDir, secDeps.ActiveProvider)
 	defer memDeps.Close()

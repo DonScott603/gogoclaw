@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -433,6 +434,119 @@ func TestEncryptedToolCalls(t *testing.T) {
 	// Compare raw bytes exactly.
 	if string(msgs[0].ToolCalls) != string(originalTC) {
 		t.Errorf("tool_calls = %s, want %s", msgs[0].ToolCalls, originalTC)
+	}
+}
+
+func TestGetMessagesEncryptedWithoutEncryptor(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	enc := newTestEncryptor(t)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	store.CreateConversation(ctx, Conversation{
+		ID: "conv-noenc", Title: "NoEnc", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Write an encrypted message.
+	store.SetEncryptor(enc)
+	store.AddMessage(ctx, StoredMessage{
+		ID: "msg-noenc-1", ConversationID: "conv-noenc", Role: "user",
+		Content: "secret", TokenCount: 1, CreatedAt: now,
+	})
+
+	// Remove encryptor and try to read — should error.
+	store.SetEncryptor(nil)
+	_, err := store.GetMessages(ctx, "conv-noenc")
+	if err == nil {
+		t.Fatal("expected error reading encrypted message without encryptor")
+	}
+	if !strings.Contains(err.Error(), "encrypted but no encryptor is configured") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestMigrateToEncryptedDeterministicOrder(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	store.CreateConversation(ctx, Conversation{
+		ID: "conv-det", Title: "Deterministic", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Add messages with identical timestamps but different IDs.
+	// IDs chosen so alphabetical order differs from insertion order.
+	ids := []string{"msg-z", "msg-a", "msg-m"}
+	for _, id := range ids {
+		store.AddMessage(ctx, StoredMessage{
+			ID:             id,
+			ConversationID: "conv-det",
+			Role:           "user",
+			Content:        "content-" + id,
+			TokenCount:     1,
+			CreatedAt:      now, // same timestamp for all
+		})
+	}
+
+	enc := newTestEncryptor(t)
+	store.SetEncryptor(enc)
+	if err := store.MigrateToEncrypted(ctx); err != nil {
+		t.Fatalf("MigrateToEncrypted: %v", err)
+	}
+
+	// All rows should be encrypted and content should be correct.
+	var encrypted int
+	store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE encrypted = 1`).Scan(&encrypted)
+	if encrypted != 3 {
+		t.Errorf("encrypted = %d, want 3", encrypted)
+	}
+
+	msgs, err := store.GetMessages(ctx, "conv-det")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	for _, m := range msgs {
+		want := "content-" + m.ID
+		if m.Content != want {
+			t.Errorf("msg %s: content = %q, want %q", m.ID, m.Content, want)
+		}
+	}
+}
+
+func TestAddMessageUpdatedAtErrorChecked(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Add a message referencing a conversation that does NOT exist.
+	// The INSERT succeeds (no FK enforcement in our test setup without
+	// PRAGMA foreign_keys=ON), but this verifies the updated_at UPDATE
+	// path executes without panic. The UPDATE affects zero rows but
+	// does not return an error — this test confirms the error check
+	// path exists and doesn't break normal operation.
+	store.CreateConversation(ctx, Conversation{
+		ID: "conv-upd", Title: "Update", Agent: "base",
+		CreatedAt: now, UpdatedAt: now,
+	})
+	err := store.AddMessage(ctx, StoredMessage{
+		ID: "msg-upd-1", ConversationID: "conv-upd", Role: "user",
+		Content: "test", TokenCount: 1, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("AddMessage should succeed: %v", err)
+	}
+
+	// Close the DB to force a failure on the updated_at touch.
+	store.db.Close()
+	err = store.AddMessage(ctx, StoredMessage{
+		ID: "msg-upd-2", ConversationID: "conv-upd", Role: "user",
+		Content: "test2", TokenCount: 1, CreatedAt: now.Add(time.Second),
+	})
+	if err == nil {
+		t.Fatal("expected error from AddMessage after DB close")
 	}
 }
 

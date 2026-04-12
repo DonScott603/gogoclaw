@@ -228,8 +228,11 @@ func (s *Store) AddMessage(ctx context.Context, m StoredMessage) error {
 		return fmt.Errorf("storage: add message: %w", err)
 	}
 	// Touch conversation updated_at.
-	s.db.ExecContext(ctx,
-		`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, m.ConversationID)
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, m.ConversationID,
+	); err != nil {
+		return fmt.Errorf("storage: update conversation timestamp: %w", err)
+	}
 	return nil
 }
 
@@ -253,7 +256,11 @@ func (s *Store) GetMessages(ctx context.Context, conversationID string) ([]Store
 			return nil, fmt.Errorf("storage: scan message: %w", err)
 		}
 
-		if encryptedFlag == 1 && s.encryptor != nil {
+		if encryptedFlag == 1 && s.encryptor == nil {
+			return nil, fmt.Errorf("storage: message %s in conversation %s is encrypted but no encryptor is configured", m.ID, m.ConversationID)
+		}
+
+		if encryptedFlag == 1 {
 			aad := BuildMessageAAD(m.ID, m.ConversationID, m.Role)
 
 			contentCt, err := base64.StdEncoding.DecodeString(m.Content)
@@ -411,7 +418,7 @@ func (s *Store) MigrateToEncrypted(ctx context.Context) error {
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT id, conversation_id, role, content, tool_calls
 			 FROM messages WHERE encrypted = 0
-			 ORDER BY created_at ASC LIMIT ?`, batchSize)
+			 ORDER BY created_at ASC, id ASC LIMIT ?`, batchSize)
 		if err != nil {
 			return fmt.Errorf("storage: query unencrypted messages: %w", err)
 		}
