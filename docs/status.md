@@ -1,6 +1,6 @@
 # GoGoClaw Module Implementation Status
 
-Phases 1-7 complete. 45 of 63 modules implemented, 5 partial, 2 stub, 11 planned.
+Phases 1-7 complete, Phase 8a in progress. 48 of 63 modules implemented, 5 partial, 2 stub, 8 planned.
 
 | Module | Package | Status | Notes |
 |--------|---------|--------|-------|
@@ -48,8 +48,8 @@ Phases 1-7 complete. 45 of 63 modules implemented, 5 partial, 2 stub, 11 planned
 | Retriever/search | internal/memory | Implemented | Similarity + recency blended scoring |
 | **Storage** | | | |
 | SQLite conversations | internal/storage | Implemented | CRUD, pagination, WAL mode |
-| At-rest encryption | internal/storage | Planned | Config flag reserved, not yet implemented |
-| Migrations | internal/storage | Planned | Schema versioning not yet needed |
+| At-rest encryption | internal/storage | Implemented | AES-256-GCM with Argon2id key derivation, AAD binding |
+| Migrations | internal/storage | Implemented | Sequential runner, version table, 2 migrations applied |
 | **Channels** | | | |
 | REST API | internal/channel | Implemented | Auth, CORS, pagination, file upload, body limits |
 | Telegram | internal/channel | Implemented | Access control (fail-closed), message splitting, file handling |
@@ -69,7 +69,7 @@ Phases 1-7 complete. 45 of 63 modules implemented, 5 partial, 2 stub, 11 planned
 | Signing | internal/security | Planned | Signature verification for skills |
 | **Audit** | | | |
 | Logger | internal/audit | Implemented | JSON Lines, secret scrubbing, typed events |
-| Log encryption | internal/audit | Planned | Config flag reserved |
+| Log encryption | internal/audit | Implemented | enc:v1: prefixed lines, AES-256-GCM |
 | **Health** | | | |
 | Monitor | internal/health | Implemented | Periodic checks, provider + MCP client registration |
 | **TUI** | | | |

@@ -62,13 +62,13 @@ logging:
   audit:
     enabled: true
     path: "~/.gogoclaw/audit/gogoclaw.jsonl"
-    # Encryption is not yet implemented; this field is reserved for future use.
+    # At-rest encryption using AES-256-GCM. Requires passphrase env var or auto-generated key.
     encrypt: false
 
 storage:
   conversations:
     path: "~/.gogoclaw/data/conversations.db"
-    # Encryption is not yet implemented; this field is reserved for future use.
+    # At-rest encryption using AES-256-GCM. Requires passphrase env var or auto-generated key.
     encrypt: false
     passphrase_env: "GOGOCLAW_DB_PASSPHRASE"
   ephemeral_mode: false
@@ -86,10 +86,10 @@ storage:
 | `logging.level` | string | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `logging.audit.enabled` | bool | `true` | Enable structured audit logging |
 | `logging.audit.path` | string | `~/.gogoclaw/audit/gogoclaw.jsonl` | Audit log file path |
-| `logging.audit.encrypt` | bool | `false` | Reserved for future use -- not yet implemented |
+| `logging.audit.encrypt` | bool | `false` | Encrypt audit log entries at rest (enc:v1: format) |
 | `storage.conversations.path` | string | `~/.gogoclaw/data/conversations.db` | SQLite database path |
-| `storage.conversations.encrypt` | bool | `false` | Reserved for future use -- not yet implemented |
-| `storage.conversations.passphrase_env` | string | `GOGOCLAW_DB_PASSPHRASE` | Env var name for future encryption passphrase |
+| `storage.conversations.encrypt` | bool | `false` | Encrypt message content and tool_calls at rest |
+| `storage.conversations.passphrase_env` | string | `GOGOCLAW_DB_PASSPHRASE` | Env var containing passphrase for key derivation (Argon2id) |
 | `storage.ephemeral_mode` | bool | `false` | When true, conversations are not persisted |
 
 ---

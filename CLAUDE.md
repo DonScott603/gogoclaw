@@ -97,7 +97,7 @@ MCP tools are registered on the dispatcher with namespaced names: `mcp_{serverna
 
 ## Known Limitations
 - **Single-session engine** — the engine is shared across all channels with a single conversation context. Per-conversation session isolation is planned for Phase 8.
-- **At-rest encryption** — config flags exist (storage.conversations.encrypt, logging.audit.encrypt) but are not yet implemented. Reserved for future use.
+- **At-rest encryption** — implemented for conversation messages (AES-256-GCM with Argon2id key derivation, AAD binding) and audit logs (enc:v1: format). Key rotation is planned for a future phase.
 - **Conversation persistence** — SQLite store exists with full CRUD but is not wired into live message flow. Conversations are in-memory only during a session.
 - **Profile inheritance** — the `inherits` field exists in AgentConfig but runtime merging is not implemented. Only the base agent is used.
 - **Provider test coverage** — the provider package has 0 test files. Integration testing relies on mock providers in other packages.

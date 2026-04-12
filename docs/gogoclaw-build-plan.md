@@ -13,7 +13,7 @@ GoGoClaw is a security-first AI agent framework written in Go, designed as an al
 **Phases 1–7 are complete.** The system is functional end-to-end: bootstrap → configure → chat via TUI, REST API, or Telegram, with WASM skill support and MCP client integration.
 
 See [docs/status.md](status.md) for per-module implementation detail. Key items not yet implemented:
-- At-rest encryption (config flags reserved, implementation planned)
+- Key rotation for at-rest encryption (encryption is implemented, rotation is planned)
 - Conversation persistence wiring (SQLite store exists but not connected to live message flow)
 - Per-conversation session isolation (single shared engine)
 - Dockerfile and systemd unit file (deferred from Phase 7)
@@ -519,7 +519,7 @@ Runs before every LLM request in hybrid or cloud-only mode (when not disabled).
 - Secrets never written to config files, logs, or conversation history
 - Memory system scrubs detected secrets before persisting
 
-> **Note:** At-rest encryption is not yet implemented. The `encrypt` config flags in storage and audit configs are reserved for future use.
+> At-rest encryption is implemented (Phase 8a-ii). Message content and tool_calls are encrypted with AES-256-GCM using AAD. Audit log entries use the `enc:v1:` format.
 
 ### Layer 5: Skill Provenance
 
@@ -538,7 +538,7 @@ Runs before every LLM request in hybrid or cloud-only mode (when not disabled).
 
 Structured JSON Lines log at `~/.gogoclaw/audit/gogoclaw.jsonl`.
 
-> **Note:** Audit log encryption is not yet implemented. The `encrypt` flag in the audit config is reserved for future use.
+> Audit log encryption is implemented (Phase 8a-ii). Each encrypted line is written as `enc:v1:<base64>`.
 
 ```json
 {"ts":"2026-03-09T10:30:00Z","event":"llm_request","provider":"minimax","model":"MiniMax-M2.1","tokens_in":1240,"tokens_out":856,"pii_detected":false,"agent":"base"}
@@ -1106,7 +1106,7 @@ GoGoClaw is a security-first AI agent framework in Go. Single binary, no CGo.
 
 2. **Conversation persistence wiring:** SQLite store exists with full CRUD (conversations, messages, pagination) but is not wired into live message flow. Messages are in-memory only during a session.
 
-3. **At-rest encryption implementation:** Config flags exist (`storage.conversations.encrypt`, `logging.audit.encrypt`) but the encryption layer is not implemented. Reserved for future use.
+3. **Encryption key rotation:** At-rest encryption is implemented (Phase 8a-ii) but key rotation is not. Changing the passphrase requires re-encrypting all existing data, which needs a dedicated migration tool.
 
 4. **Provider test coverage:** The `internal/provider` package has 0 test files. Integration testing relies on mock providers in engine and channel tests. Unit tests for SSE parsing, request building, and error handling are needed.
 

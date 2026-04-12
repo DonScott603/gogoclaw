@@ -217,7 +217,7 @@ All file paths pass through PathValidator, which rejects directory traversal att
 **Audit Trail.**
 Every tool invocation, skill execution, provider call, and security decision is logged to a structured audit trail. This provides a complete record of what the agent did and why, suitable for post-incident review.
 
-**Note on at-rest encryption:** A config flag for at-rest encryption of conversation history and memory is reserved in the schema but not yet implemented. Conversation data in SQLite and vector memory are currently stored unencrypted on disk.
+**At-rest encryption:** Conversation message content and tool_calls are encrypted with AES-256-GCM using Argon2id key derivation. Audit log entries are encrypted in `enc:v1:` format. Enable via `storage.conversations.encrypt: true` in config.yaml.
 
 ---
 
