@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -16,12 +17,14 @@ import (
 // EncryptionFormatVersion is the current encryption wire format version.
 const EncryptionFormatVersion = 1
 
-// TODO: Key rotation (future phase)
-// - Accept old key + new key
-// - Decrypt all messages with old key, re-encrypt with new key
-// - Re-encrypt audit log entries
-// - Atomic file replacement for key/salt files
-// - Rollback on partial failure
+// KeyEquals returns true if both encryptors hold identical key bytes.
+// Uses constant-time comparison to avoid timing side channels.
+func (e *Encryptor) KeyEquals(other *Encryptor) bool {
+	if e == nil || other == nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(e.key, other.key) == 1
+}
 
 // Encryptor provides AES-256-GCM encryption using a single master key
 // held for the process lifetime.
