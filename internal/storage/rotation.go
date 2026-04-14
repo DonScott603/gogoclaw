@@ -87,29 +87,44 @@ func RotateKeys(ctx context.Context, cfg RotateConfig) (*RotateResult, error) {
 
 // rotateEncryptedRows processes rows where encrypted = 1, re-encrypting from old to new key.
 // Uses try-both-keys for resumability after partial prior runs.
-// Pagination uses OFFSET since re-encrypting a row does not change its encrypted flag.
+// Pagination uses keyset (created_at, id) cursor for stable iteration.
 func rotateEncryptedRows(ctx context.Context, db *sql.DB, oldEnc, newEnc *Encryptor, result *RotateResult) error {
-	offset := 0
+	var cursorCreatedAt string
+	var cursorID string
+	hasCursor := false
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("rotation: context canceled: %w", err)
 		}
 
-		rows, err := db.QueryContext(ctx,
-			`SELECT id, conversation_id, role, content, tool_calls
-			 FROM messages WHERE encrypted = 1
-			 ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`, rotationBatchSize, offset)
+		type rowData struct {
+			id, convID, role, content, toolCalls, createdAt string
+		}
+		var batch []rowData
+
+		var rows *sql.Rows
+		var err error
+		if !hasCursor {
+			rows, err = db.QueryContext(ctx,
+				`SELECT id, conversation_id, role, content, tool_calls, created_at
+				 FROM messages WHERE encrypted = 1
+				 ORDER BY created_at ASC, id ASC LIMIT ?`, rotationBatchSize)
+		} else {
+			rows, err = db.QueryContext(ctx,
+				`SELECT id, conversation_id, role, content, tool_calls, created_at
+				 FROM messages WHERE encrypted = 1
+				   AND (created_at > ? OR (created_at = ? AND id > ?))
+				 ORDER BY created_at ASC, id ASC LIMIT ?`,
+				cursorCreatedAt, cursorCreatedAt, cursorID, rotationBatchSize)
+		}
 		if err != nil {
 			return fmt.Errorf("rotation: query encrypted messages: %w", err)
 		}
 
-		type rowData struct {
-			id, convID, role, content, toolCalls string
-		}
-		var batch []rowData
 		for rows.Next() {
 			var r rowData
-			if err := rows.Scan(&r.id, &r.convID, &r.role, &r.content, &r.toolCalls); err != nil {
+			if err := rows.Scan(&r.id, &r.convID, &r.role, &r.content, &r.toolCalls, &r.createdAt); err != nil {
 				rows.Close()
 				return fmt.Errorf("rotation: scan encrypted message: %w", err)
 			}
@@ -206,7 +221,12 @@ func rotateEncryptedRows(ctx context.Context, db *sql.DB, oldEnc, newEnc *Encryp
 
 		result.MessagesRotated += batchRotated
 		result.MessagesSkipped += batchSkipped
-		offset += len(batch)
+
+		// Advance cursor to the last row in the committed batch.
+		last := batch[len(batch)-1]
+		cursorCreatedAt = last.createdAt
+		cursorID = last.id
+		hasCursor = true
 
 		log.Printf("rotate: re-encrypted %d messages, skipped %d (already rotated)",
 			result.MessagesRotated, result.MessagesSkipped)

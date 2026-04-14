@@ -947,3 +947,49 @@ func TestRotateKeysAuditLogFlushFailure(t *testing.T) {
 		t.Error("temp file should have been removed after flush failure")
 	}
 }
+
+func TestRotateKeysEncryptedRowsSameTimestamp(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+	ctx := context.Background()
+
+	// All rows share the same created_at. IDs chosen so alphabetical order
+	// differs from insertion order to exercise (created_at, id) cursor logic.
+	sameTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ids := []string{"msg-z", "msg-a", "msg-m", "msg-b", "msg-y"}
+	for _, id := range ids {
+		addTestMessage(t, dbPath, id, "content-"+id, "", keyA, sameTime)
+	}
+
+	result, err := RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       dbPath,
+	})
+	if err != nil {
+		t.Fatalf("RotateKeys: %v", err)
+	}
+	if result.MessagesRotated != 5 {
+		t.Errorf("MessagesRotated = %d, want 5", result.MessagesRotated)
+	}
+	if result.MessagesSkipped != 0 {
+		t.Errorf("MessagesSkipped = %d, want 0", result.MessagesSkipped)
+	}
+
+	// All rows should decrypt with key B and not with key A.
+	for _, id := range ids {
+		got := decryptMessageContent(t, dbPath, id, keyB)
+		want := "content-" + id
+		if got != want {
+			t.Errorf("%s: got %q, want %q", id, got, want)
+		}
+
+		content, _, _ := readMessageContent(t, dbPath, id)
+		ct, _ := base64.StdEncoding.DecodeString(content)
+		aad := BuildMessageAAD(id, "conv-1", "user")
+		if _, err := keyA.Decrypt(ct, aad); err == nil {
+			t.Errorf("%s: should NOT decrypt with old key", id)
+		}
+	}
+}
