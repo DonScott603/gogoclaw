@@ -1,0 +1,5 @@
+2026-04-10T09:14:00Z incident_id=rest-latency-17
+symptom=api_message_p95_above_slo
+channel=rest
+impact=degraded
+notes=Latency increased during a burst of concurrent requests with repeated conversation reuse and file uploads. No data loss was observed. SQLite WAL remained enabled. Provider responses were successful but slower than baseline.

@@ -1,0 +1,34 @@
+{
+  "requests": [
+    {
+      "name": "short-status-check",
+      "weight": 5,
+      "text": "Summarize the current system status in two short bullet points and call out any immediate risk."
+    },
+    {
+      "name": "repo-analysis",
+      "weight": 3,
+      "text": "Analyze this Go repo from a reliability perspective. Focus on REST ingress, provider retries, SQLite write pressure, and any background work that can amplify latency."
+    },
+    {
+      "name": "long-context-followup",
+      "weight": 2,
+      "text": "We are validating a production-like chat workload. Please respond with a concise plan that mentions session reuse, context growth, persistence contention, upload handling, rate limits, and conversation listing under write load. Also note whether the request path is likely CPU-bound, IO-bound, or externally latency-bound."
+    },
+    {
+      "name": "upload-review",
+      "weight": 2,
+      "text": "Review the uploaded files and return a short action list. Mention any anomalies, missing metadata, and whether the content looks safe to process.",
+      "files": [
+        {
+          "path": "uploads/incident-report.txt",
+          "field": "file"
+        },
+        {
+          "path": "uploads/architecture-notes.md",
+          "field": "file"
+        }
+      ]
+    }
+  ]
+}
