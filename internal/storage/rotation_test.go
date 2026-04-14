@@ -404,16 +404,46 @@ func TestRotateKeysEmptyDatabase(t *testing.T) {
 	keyB := newTestEncryptor(t)
 	ctx := context.Background()
 
-	_, err := RotateKeys(ctx, RotateConfig{
+	result, err := RotateKeys(ctx, RotateConfig{
 		OldEncryptor: keyA,
 		NewEncryptor: keyB,
 		DBPath:       dbPath,
 	})
-	if err == nil {
-		t.Fatal("expected error for empty database")
+	if err != nil {
+		t.Fatalf("expected success for empty database, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no messages to rotate") {
-		t.Errorf("unexpected error: %v", err)
+	if result.MessagesRotated != 0 {
+		t.Errorf("MessagesRotated = %d, want 0", result.MessagesRotated)
+	}
+	if result.PlaintextEncrypted != 0 {
+		t.Errorf("PlaintextEncrypted = %d, want 0", result.PlaintextEncrypted)
+	}
+}
+
+func TestRotateKeysEmptyDBAuditStillRotates(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+	ctx := context.Background()
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	encLine := encryptAuditLine(t, `{"event":"test"}`, keyA)
+	writeAuditFile(t, auditPath, []string{encLine})
+
+	result, err := RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       dbPath,
+		AuditPath:    auditPath,
+	})
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if result.MessagesRotated != 0 {
+		t.Errorf("MessagesRotated = %d, want 0", result.MessagesRotated)
+	}
+	if result.AuditLinesRotated != 1 {
+		t.Errorf("AuditLinesRotated = %d, want 1", result.AuditLinesRotated)
 	}
 }
 

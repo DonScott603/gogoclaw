@@ -68,17 +68,17 @@ func RotateKeys(ctx context.Context, cfg RotateConfig) (*RotateResult, error) {
 		return nil, fmt.Errorf("rotation: count total messages: %w", err)
 	}
 	if totalMessages == 0 {
-		return nil, fmt.Errorf("rotation: no messages to rotate")
-	}
+		log.Printf("rotate: no messages in database — skipping DB rotation")
+	} else {
+		// Pass 1: re-encrypt encrypted rows.
+		if err := rotateEncryptedRows(ctx, db, cfg.OldEncryptor, cfg.NewEncryptor, result); err != nil {
+			return nil, err
+		}
 
-	// Pass 1: re-encrypt encrypted rows.
-	if err := rotateEncryptedRows(ctx, db, cfg.OldEncryptor, cfg.NewEncryptor, result); err != nil {
-		return nil, err
-	}
-
-	// Pass 2: encrypt plaintext rows.
-	if err := encryptPlaintextRows(ctx, db, cfg.NewEncryptor, result); err != nil {
-		return nil, err
+		// Pass 2: encrypt plaintext rows.
+		if err := encryptPlaintextRows(ctx, db, cfg.NewEncryptor, result); err != nil {
+			return nil, err
+		}
 	}
 
 	// --- Audit log rotation ---
@@ -442,6 +442,13 @@ func rotateAuditLog(ctx context.Context, auditPath string, oldEnc, newEnc *Encry
 		}
 		if flushErr != nil {
 			writeErr = fmt.Errorf("rotation: flush audit temp file: %w", flushErr)
+		}
+	}
+
+	// Ensure data is durable on disk before rename.
+	if writeErr == nil {
+		if syncErr := tmp.Sync(); syncErr != nil {
+			writeErr = fmt.Errorf("rotation: sync audit temp file: %w", syncErr)
 		}
 	}
 
