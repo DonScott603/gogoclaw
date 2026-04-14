@@ -2,7 +2,10 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -36,9 +39,9 @@ func NewSummarizer(p provider.Provider, thresholdTokens int, store VectorStore) 
 
 // SummarizeResult holds the result of a summarization.
 type SummarizeResult struct {
-	Summary         string             // the summary text
+	Summary          string             // the summary text
 	RemainingHistory []provider.Message // messages that were kept (not summarized)
-	FactsExtracted  []string           // facts extracted and saved to memory
+	FactsExtracted   []string           // facts extracted and saved to memory
 }
 
 // MaybeSummarize checks if history exceeds the threshold and summarizes if so.
@@ -61,10 +64,19 @@ func (s *Summarizer) MaybeSummarize(ctx context.Context, history []provider.Mess
 	// Build the conversation text for summarization.
 	var b strings.Builder
 	for _, msg := range older {
-		if msg.Role == "tool" {
-			continue // skip tool messages in summary input
+		switch {
+		case msg.Role == "tool":
+			continue // tool results captured via condensed assistant tool calls
+		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			condensed := condensedToolCalls(msg.ToolCalls)
+			if msg.Content != "" {
+				b.WriteString(fmt.Sprintf("assistant: %s [Tools: %s]\n", msg.Content, condensed))
+			} else {
+				b.WriteString(fmt.Sprintf("assistant: [Tools: %s]\n", condensed))
+			}
+		default:
+			b.WriteString(fmt.Sprintf("%s: %s\n", msg.Role, msg.Content))
 		}
-		b.WriteString(fmt.Sprintf("%s: %s\n", msg.Role, msg.Content))
 	}
 
 	summaryPrompt := fmt.Sprintf(defaultSummarizePrompt, b.String())
@@ -79,6 +91,14 @@ func (s *Summarizer) MaybeSummarize(ctx context.Context, history []provider.Mess
 	}
 
 	summary := strings.TrimSpace(resp.Content)
+
+	// Key term overlap quality check — log missing technical terms.
+	if missing := checkKeyTermOverlap(older, summary); len(missing) > 0 {
+		if len(missing) > 5 {
+			missing = missing[:5]
+		}
+		log.Printf("memory: summarization quality warning — missing key terms: %v", missing)
+	}
 
 	// Extract facts from the summarized segment and save to memory.
 	facts := ExtractFacts(older)
@@ -135,4 +155,169 @@ func (s *Summarizer) estimateHistoryTokens(history []provider.Message) int {
 		total += len(msg.Content) / 4
 	}
 	return total
+}
+
+// condensedToolCalls builds a compact string of tool calls for summarization.
+// Example: "file_read(/etc/config.yaml); shell_exec(go test ./...)"
+func condensedToolCalls(toolCalls []provider.ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, tc := range toolCalls {
+		desc := condenseToolCall(tc)
+		if desc != "" {
+			parts = append(parts, desc)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// condenseToolCall extracts tool name and key argument into a one-liner.
+// Example: "file_read(/etc/config.yaml)" or "shell_exec(go test ./...)"
+func condenseToolCall(tc provider.ToolCall) string {
+	name := tc.Name
+	if name == "" {
+		return ""
+	}
+	keyArg := extractKeyArg(tc.Name, tc.Arguments)
+	if keyArg != "" {
+		if len(keyArg) > 80 {
+			keyArg = keyArg[:77] + "..."
+		}
+		return fmt.Sprintf("%s(%s)", name, keyArg)
+	}
+	return name + "()"
+}
+
+// extractKeyArg pulls the most informative argument from a tool call's JSON.
+// Uses a deterministic priority list per tool name, then a global fallback
+// list for unknown tools. Never uses random map iteration.
+func extractKeyArg(toolName string, args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(args, &parsed); err != nil {
+		return ""
+	}
+
+	// Per-tool priority keys.
+	priorityKeys := map[string][]string{
+		"file_read":     {"path"},
+		"file_write":    {"path"},
+		"shell_exec":    {"command"},
+		"memory_save":   {"content"},
+		"memory_search": {"query"},
+		"web_fetch":     {"url"},
+		"think":         {"thought"},
+	}
+
+	if keys, ok := priorityKeys[toolName]; ok {
+		for _, key := range keys {
+			if val, exists := parsed[key]; exists {
+				if s, ok := val.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+
+	// Deterministic fallback for unknown tools — fixed key order.
+	fallbackKeys := []string{"path", "file", "command", "query", "url", "name", "content", "text"}
+	for _, key := range fallbackKeys {
+		if val, ok := parsed[key]; ok {
+			if s, ok := val.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+
+	return ""
+}
+
+// checkKeyTermOverlap extracts technical terms from the original conversation
+// segment and checks that they appear in the summary. Returns missing terms
+// in sorted order. This is a heuristic quality warning, not a gate.
+func checkKeyTermOverlap(messages []provider.Message, summary string) []string {
+	terms := extractKeyTerms(messages)
+	if len(terms) == 0 {
+		return nil
+	}
+
+	summaryLower := strings.ToLower(summary)
+	var missing []string
+	for _, term := range terms {
+		if !strings.Contains(summaryLower, strings.ToLower(term)) {
+			missing = append(missing, term)
+		}
+	}
+	return missing
+}
+
+// extractKeyTerms identifies technical tokens from messages.
+// Focuses on high-signal patterns: paths, dotted names, underscored
+// identifiers, hyphenated names, and CamelCase words. Returns a
+// sorted, deduplicated slice.
+func extractKeyTerms(messages []provider.Message) []string {
+	seen := make(map[string]int) // term -> occurrence count
+
+	for _, msg := range messages {
+		if msg.Content == "" {
+			continue
+		}
+
+		words := strings.Fields(msg.Content)
+		for _, word := range words {
+			// Strip common punctuation from edges.
+			clean := strings.Trim(word, ".,;:!?\"'`()[]{}—–")
+			if clean == "" || len(clean) < 4 {
+				continue
+			}
+
+			// Technical terms: contain /, ., _, or - (paths, packages, identifiers).
+			if strings.ContainsAny(clean, "/._-") {
+				seen[clean]++
+				continue
+			}
+
+			// CamelCase: mixed case, not all-upper.
+			if isCamelCase(clean) {
+				seen[clean]++
+			}
+		}
+	}
+
+	// Keep terms appearing 2+ times, or 1+ for path-like terms (contain /).
+	var terms []string
+	for term, count := range seen {
+		if count >= 2 || strings.Contains(term, "/") {
+			terms = append(terms, term)
+		}
+	}
+	sort.Strings(terms)
+	return terms
+}
+
+// isCamelCase returns true if the word has mixed case (not all-upper, not
+// all-lower) and starts with an uppercase letter.
+func isCamelCase(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	if s[0] < 'A' || s[0] > 'Z' {
+		return false
+	}
+	hasLower := false
+	hasUpper := false
+	for _, r := range s[1:] {
+		if r >= 'a' && r <= 'z' {
+			hasLower = true
+		}
+		if r >= 'A' && r <= 'Z' {
+			hasUpper = true
+		}
+	}
+	return hasLower && hasUpper
 }

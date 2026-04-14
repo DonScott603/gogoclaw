@@ -30,6 +30,66 @@ func (NoOpSummarizer) MaybeSummarize(context.Context, []provider.Message, string
 	return nil, nil
 }
 
+// BoundaryType identifies which lifecycle layer triggered a conversation boundary.
+type BoundaryType int
+
+const (
+	BoundaryExplicit BoundaryType = iota // user explicitly closed/switched conversation
+	BoundarySoft                         // idle timeout or token budget threshold
+	BoundaryDaily                        // daily safety net reset
+)
+
+// String returns a human-readable name for the boundary type.
+func (bt BoundaryType) String() string {
+	switch bt {
+	case BoundaryExplicit:
+		return "explicit"
+	case BoundarySoft:
+		return "soft"
+	case BoundaryDaily:
+		return "daily"
+	default:
+		return "unknown"
+	}
+}
+
+// BoundarySummaryResult holds the output of a boundary summarization.
+type BoundarySummaryResult struct {
+	// CompactedHistory is the summarized/compacted history to replace the session's history.
+	CompactedHistory []provider.Message
+
+	// SessionSummary is a structured summary suitable for storage as a
+	// retrievable vector document.
+	SessionSummary string
+
+	// FactsExtracted holds any facts extracted during boundary processing.
+	FactsExtracted []string
+}
+
+// BoundarySummarizer produces a structured summary at conversation boundaries.
+// It has a distinct prompt from mid-conversation summarization (the Summarizer
+// interface) and produces both compacted history and a retrievable session
+// summary document.
+//
+// Implementations are expected to:
+// 1. Check session.Summarizing flag before running
+// 2. Wait for in-flight mid-conversation summarization to complete (or cancel it)
+// 3. Use a structured handoff prompt capturing: what the user was working on,
+//    decisions made, open questions, commitments made
+//
+// Phase 8e implements the concrete boundary summarizer. This interface is
+// defined here so the engine package owns the contract.
+type BoundarySummarizer interface {
+	SummarizeBoundary(ctx context.Context, session *Session, boundaryType BoundaryType) (*BoundarySummaryResult, error)
+}
+
+// NoOpBoundarySummarizer is a BoundarySummarizer that does nothing.
+type NoOpBoundarySummarizer struct{}
+
+func (NoOpBoundarySummarizer) SummarizeBoundary(context.Context, *Session, BoundaryType) (*BoundarySummaryResult, error) {
+	return nil, nil
+}
+
 // PersistenceHook is called by the Engine at the right moments to persist
 // messages. SessionManager implements this interface; Engine controls timing.
 // Errors are propagated to callers so persistence failures are visible.
@@ -43,23 +103,25 @@ type PersistenceHook interface {
 // receives a Session, reads/writes history via Session methods, and returns
 // results. It does NOT hold any conversation state.
 type Engine struct {
-	provider     provider.Provider
-	dispatcher   *tools.Dispatcher
-	assembler    *ContextAssembler
-	summarizer   Summarizer
-	systemPrompt string
-	promptMu     sync.RWMutex // protects systemPrompt
-	persistence  PersistenceHook
+	provider           provider.Provider
+	dispatcher         *tools.Dispatcher
+	assembler          *ContextAssembler
+	summarizer         Summarizer
+	boundarySummarizer BoundarySummarizer
+	systemPrompt       string
+	promptMu           sync.RWMutex // protects systemPrompt
+	persistence        PersistenceHook
 }
 
 // Config holds the parameters for creating a new Engine.
 type Config struct {
-	Provider     provider.Provider
-	Dispatcher   *tools.Dispatcher
-	SystemPrompt string
-	MaxContext   int
-	Summarizer   Summarizer
-	Persistence  PersistenceHook
+	Provider           provider.Provider
+	Dispatcher         *tools.Dispatcher
+	SystemPrompt       string
+	MaxContext          int
+	Summarizer         Summarizer
+	BoundarySummarizer BoundarySummarizer
+	Persistence        PersistenceHook
 }
 
 // New creates an Engine with the given configuration.
@@ -68,14 +130,24 @@ func New(cfg Config) *Engine {
 	if s == nil {
 		s = NoOpSummarizer{}
 	}
-	return &Engine{
-		provider:     cfg.Provider,
-		dispatcher:   cfg.Dispatcher,
-		assembler:    NewContextAssembler(cfg.MaxContext, cfg.Provider),
-		summarizer:   s,
-		systemPrompt: cfg.SystemPrompt,
-		persistence:  cfg.Persistence,
+	bs := cfg.BoundarySummarizer
+	if bs == nil {
+		bs = NoOpBoundarySummarizer{}
 	}
+	return &Engine{
+		provider:           cfg.Provider,
+		dispatcher:         cfg.Dispatcher,
+		assembler:          NewContextAssembler(cfg.MaxContext, cfg.Provider),
+		summarizer:         s,
+		boundarySummarizer: bs,
+		systemPrompt:       cfg.SystemPrompt,
+		persistence:        cfg.Persistence,
+	}
+}
+
+// BoundarySummarizer returns the configured boundary summarizer.
+func (e *Engine) BoundarySummarizer() BoundarySummarizer {
+	return e.boundarySummarizer
 }
 
 // Assembler returns the context assembler for external configuration.

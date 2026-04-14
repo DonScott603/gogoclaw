@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,6 +95,29 @@ func (s *Session) ClearHistory() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.History = nil
+}
+
+// WaitForSummarization waits for any in-flight async summarization to finish.
+// Returns true if the in-flight flag cleared before timeout, false if it
+// timed out.
+//
+// This method does NOT consume PendingSummary. Callers should apply pending
+// summaries through the normal engine-owned applyPendingSummary path to
+// preserve single-consumer ownership of the pending result channel.
+func (s *Session) WaitForSummarization(timeout time.Duration) bool {
+	if !s.Summarizing.Load() {
+		return true
+	}
+
+	deadline := time.Now().Add(timeout)
+	for s.Summarizing.Load() {
+		if time.Now().After(deadline) {
+			log.Printf("engine: WaitForSummarization timed out after %v", timeout)
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
 }
 
 // TouchActivity updates LastActivityAt to the current time.

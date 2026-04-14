@@ -530,3 +530,75 @@ func TestSendStreamAsyncFlow(t *testing.T) {
 		t.Errorf("h[0] = %q, want 'stream summary'", h[0].Content)
 	}
 }
+
+// --- WaitForSummarization tests ---
+
+func TestWaitForSummarizationNotRunning(t *testing.T) {
+	session := newTestSession("tui", "test")
+	// Summarizing is false by default.
+	result := session.WaitForSummarization(100 * time.Millisecond)
+	if !result {
+		t.Fatal("expected true when not summarizing")
+	}
+}
+
+func TestWaitForSummarizationCompletesInTime(t *testing.T) {
+	session := newTestSession("tui", "test")
+	session.Summarizing.Store(true)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		session.Summarizing.Store(false)
+	}()
+
+	result := session.WaitForSummarization(500 * time.Millisecond)
+	if !result {
+		t.Fatal("expected true when summarization completes in time")
+	}
+}
+
+func TestWaitForSummarizationTimesOut(t *testing.T) {
+	session := newTestSession("tui", "test")
+	session.Summarizing.Store(true)
+	// Don't clear the flag.
+
+	result := session.WaitForSummarization(50 * time.Millisecond)
+	if result {
+		t.Fatal("expected false on timeout")
+	}
+}
+
+func TestWaitForSummarizationDoesNotConsumePending(t *testing.T) {
+	session := newTestSession("tui", "test")
+	session.Summarizing.Store(true)
+
+	// Put a pending result on the channel.
+	pending := &PendingSummaryResult{
+		SnapshotLen: 2,
+		Result: &memory.SummarizeResult{
+			Summary:          "test summary",
+			RemainingHistory: []provider.Message{msg("system", "test summary")},
+		},
+	}
+	session.PendingSummary <- pending
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		session.Summarizing.Store(false)
+	}()
+
+	result := session.WaitForSummarization(500 * time.Millisecond)
+	if !result {
+		t.Fatal("expected true")
+	}
+
+	// Verify the pending result is still on the channel.
+	select {
+	case got := <-session.PendingSummary:
+		if got.Result.Summary != "test summary" {
+			t.Errorf("expected same pending result, got summary=%q", got.Result.Summary)
+		}
+	default:
+		t.Fatal("pending result was consumed — WaitForSummarization should not drain channel")
+	}
+}
