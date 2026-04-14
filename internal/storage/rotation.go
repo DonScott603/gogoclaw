@@ -78,7 +78,7 @@ func RotateKeys(ctx context.Context, cfg RotateConfig) (*RotateResult, error) {
 	}
 
 	// --- Audit log rotation ---
-	if err := rotateAuditLog(cfg.AuditPath, cfg.OldEncryptor, cfg.NewEncryptor, result); err != nil {
+	if err := rotateAuditLog(ctx, cfg.AuditPath, cfg.OldEncryptor, cfg.NewEncryptor, result); err != nil {
 		return nil, err
 	}
 
@@ -324,15 +324,23 @@ func encryptPlaintextRows(ctx context.Context, db *sql.DB, newEnc *Encryptor, re
 	return nil
 }
 
+// testAuditFlushErr, when non-nil, overrides the result of writer.Flush()
+// during audit rotation. Used only in tests to simulate flush failures.
+var testAuditFlushErr func() error
+
 // rotateAuditLog re-encrypts encrypted audit lines and passes through plaintext lines.
-// Uses temp-file + rename for atomicity.
-func rotateAuditLog(auditPath string, oldEnc, newEnc *Encryptor, result *RotateResult) error {
+// Uses temp-file + rename for atomicity. Honors context cancellation.
+func rotateAuditLog(ctx context.Context, auditPath string, oldEnc, newEnc *Encryptor, result *RotateResult) error {
 	if auditPath == "" {
 		return nil
 	}
 
 	if _, err := os.Stat(auditPath); os.IsNotExist(err) {
 		return nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("rotation: context canceled before audit rotation: %w", err)
 	}
 
 	f, err := os.Open(auditPath)
@@ -354,6 +362,11 @@ func rotateAuditLog(auditPath string, oldEnc, newEnc *Encryptor, result *RotateR
 	var writeErr error
 
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			writeErr = fmt.Errorf("rotation: context canceled during audit rotation: %w", err)
+			break
+		}
+
 		line := scanner.Text()
 
 		if strings.TrimSpace(line) == "" {
@@ -397,7 +410,17 @@ func rotateAuditLog(auditPath string, oldEnc, newEnc *Encryptor, result *RotateR
 		writeErr = fmt.Errorf("rotation: scan audit log: %w", scanErr)
 	}
 
-	writer.Flush()
+	// Check flush error before proceeding to rename.
+	if writeErr == nil {
+		flushErr := writer.Flush()
+		if testAuditFlushErr != nil {
+			flushErr = testAuditFlushErr()
+		}
+		if flushErr != nil {
+			writeErr = fmt.Errorf("rotation: flush audit temp file: %w", flushErr)
+		}
+	}
+
 	tmp.Close()
 	f.Close()
 
@@ -406,6 +429,13 @@ func rotateAuditLog(auditPath string, oldEnc, newEnc *Encryptor, result *RotateR
 		result.AuditLinesRotated = 0
 		result.AuditLinesPassedThru = 0
 		return writeErr
+	}
+
+	if err := ctx.Err(); err != nil {
+		os.Remove(tmpPath)
+		result.AuditLinesRotated = 0
+		result.AuditLinesPassedThru = 0
+		return fmt.Errorf("rotation: context canceled before audit rename: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, auditPath); err != nil {
@@ -428,30 +458,32 @@ type RotationStats struct {
 }
 
 // GetRotationStats returns counts for pre-rotation planning.
-// If the DB or audit file doesn't exist, returns zero counts for that component.
+// The DB path is required and must exist. Missing audit file is not an error.
 func GetRotationStats(ctx context.Context, dbPath, auditPath string) (*RotationStats, error) {
 	stats := &RotationStats{}
 
-	if _, err := os.Stat(dbPath); err == nil {
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("rotation: open db for stats: %w", err)
-		}
-		defer db.Close()
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("rotation: database path does not exist: %s", dbPath)
+	}
 
-		if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-			return nil, fmt.Errorf("rotation: set WAL mode for stats: %w", err)
-		}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("rotation: open db for stats: %w", err)
+	}
+	defer db.Close()
 
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&stats.TotalMessages); err != nil {
-			return nil, fmt.Errorf("rotation: count total messages: %w", err)
-		}
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE encrypted = 1`).Scan(&stats.EncryptedMessages); err != nil {
-			return nil, fmt.Errorf("rotation: count encrypted messages: %w", err)
-		}
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE encrypted = 0`).Scan(&stats.PlaintextMessages); err != nil {
-			return nil, fmt.Errorf("rotation: count plaintext messages: %w", err)
-		}
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("rotation: set WAL mode for stats: %w", err)
+	}
+
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&stats.TotalMessages); err != nil {
+		return nil, fmt.Errorf("rotation: count total messages: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE encrypted = 1`).Scan(&stats.EncryptedMessages); err != nil {
+		return nil, fmt.Errorf("rotation: count encrypted messages: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE encrypted = 0`).Scan(&stats.PlaintextMessages); err != nil {
+		return nil, fmt.Errorf("rotation: count plaintext messages: %w", err)
 	}
 
 	if auditPath != "" {

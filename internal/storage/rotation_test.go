@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -794,5 +795,155 @@ func TestGetRotationStats(t *testing.T) {
 	}
 	if stats.EncryptedAuditLines != 1 {
 		t.Errorf("EncryptedAuditLines = %d, want 1", stats.EncryptedAuditLines)
+	}
+}
+
+func TestGetRotationStatsMissingDB(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := GetRotationStats(ctx, filepath.Join(t.TempDir(), "nonexistent.db"), "")
+	if err == nil {
+		t.Fatal("expected error for missing DB path")
+	}
+	if !strings.Contains(err.Error(), "database path does not exist") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGetRotationStatsMissingAudit(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	addTestMessage(t, dbPath, "msg-stats", "content", "", nil, now)
+
+	stats, err := GetRotationStats(ctx, dbPath, filepath.Join(t.TempDir(), "nonexistent.jsonl"))
+	if err != nil {
+		t.Fatalf("GetRotationStats should succeed with missing audit: %v", err)
+	}
+	if stats.TotalMessages != 1 {
+		t.Errorf("TotalMessages = %d, want 1", stats.TotalMessages)
+	}
+	if stats.AuditLines != 0 {
+		t.Errorf("AuditLines = %d, want 0", stats.AuditLines)
+	}
+	if stats.EncryptedAuditLines != 0 {
+		t.Errorf("EncryptedAuditLines = %d, want 0", stats.EncryptedAuditLines)
+	}
+}
+
+func TestRotateKeysAuditLogCancellation(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	addTestMessage(t, dbPath, "msg-cancel", "content", "", keyA, now)
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+
+	// Write enough lines to ensure the loop runs before cancellation is checked.
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, encryptAuditLine(t, fmt.Sprintf(`{"event":"line-%d"}`, i), keyA))
+	}
+	writeAuditFile(t, auditPath, lines)
+
+	// Save original file contents.
+	originalBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancel context before calling RotateKeys — DB pass will succeed
+	// (it committed before cancel), then audit rotation should detect cancel.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run DB rotation with live context, then cancel before audit.
+	// We need the DB pass to succeed, so we can't cancel before RotateKeys.
+	// Instead, cancel immediately — the DB pass may succeed (batches commit
+	// before cancel check), but audit should catch it.
+	cancel()
+
+	_, err = RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       dbPath,
+		AuditPath:    auditPath,
+	})
+	if err == nil {
+		t.Fatal("expected error from canceled context")
+	}
+	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error should be context cancellation, got: %v", err)
+	}
+
+	// Original audit file should be unchanged (temp file cleaned up).
+	afterBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterBytes) != string(originalBytes) {
+		t.Error("original audit file was modified after cancellation")
+	}
+
+	// Temp file should not exist.
+	tmpPath := auditPath + ".rotating"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temp file should have been removed after cancellation")
+	}
+}
+
+func TestRotateKeysAuditLogFlushFailure(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	addTestMessage(t, dbPath, "msg-flush", "content", "", keyA, now)
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	encLine := encryptAuditLine(t, `{"event":"test"}`, keyA)
+	writeAuditFile(t, auditPath, []string{encLine})
+
+	// Save original file contents.
+	originalBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Install test hook to simulate flush failure.
+	testAuditFlushErr = func() error {
+		return errors.New("simulated disk full")
+	}
+	t.Cleanup(func() { testAuditFlushErr = nil })
+
+	_, err = RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       dbPath,
+		AuditPath:    auditPath,
+	})
+	if err == nil {
+		t.Fatal("expected error from flush failure")
+	}
+	if !strings.Contains(err.Error(), "flush audit temp file") {
+		t.Errorf("error should mention flush, got: %v", err)
+	}
+
+	// Original audit file should be byte-for-byte unchanged.
+	afterBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterBytes) != string(originalBytes) {
+		t.Error("original audit file was modified after flush failure")
+	}
+
+	// Temp file should not exist.
+	tmpPath := auditPath + ".rotating"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temp file should have been removed after flush failure")
 	}
 }
