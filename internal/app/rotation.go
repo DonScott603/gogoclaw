@@ -134,6 +134,9 @@ func PromoteKeyFiles(configDir string, oldSource string, newSource string) error
 
 	switch {
 	case oldSource == "auto-key" && newSource == "auto-key":
+		if !fileExists(keyPath) {
+			return fmt.Errorf("rotation: expected old key file %s is missing — cannot back up; aborting promotion", keyPath)
+		}
 		if err := backupFile(keyPath, keyPath+".bak"); err != nil {
 			return err
 		}
@@ -142,6 +145,9 @@ func PromoteKeyFiles(configDir string, oldSource string, newSource string) error
 		}
 
 	case oldSource == "auto-key" && newSource == "passphrase":
+		if !fileExists(keyPath) {
+			return fmt.Errorf("rotation: expected old key file %s is missing — cannot back up; aborting promotion", keyPath)
+		}
 		if err := backupFile(keyPath, keyPath+".bak"); err != nil {
 			return err
 		}
@@ -151,6 +157,9 @@ func PromoteKeyFiles(configDir string, oldSource string, newSource string) error
 		os.Remove(keyPath)
 
 	case oldSource == "passphrase" && newSource == "passphrase":
+		if !fileExists(saltPath) {
+			return fmt.Errorf("rotation: expected old salt file %s is missing — cannot back up; aborting promotion", saltPath)
+		}
 		if err := backupFile(saltPath, saltPath+".bak"); err != nil {
 			return err
 		}
@@ -159,6 +168,9 @@ func PromoteKeyFiles(configDir string, oldSource string, newSource string) error
 		}
 
 	case oldSource == "passphrase" && newSource == "auto-key":
+		if !fileExists(saltPath) {
+			return fmt.Errorf("rotation: expected old salt file %s is missing — cannot back up; aborting promotion", saltPath)
+		}
 		if err := backupFile(saltPath, saltPath+".bak"); err != nil {
 			return err
 		}

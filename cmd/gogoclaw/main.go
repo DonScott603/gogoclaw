@@ -351,7 +351,7 @@ func runRotateKey(configDir string) {
 	if oldSource == "passphrase" {
 		bakFile = filepath.Join(configDir, "data", ".encryption_salt.bak")
 	}
-	fmt.Printf("\nOld key backed up to %s.\n", bakFile)
+	fmt.Printf("\nPrevious key material backed up to %s.\n", bakFile)
 	fmt.Println("Delete this backup once you've verified everything works.")
 
 	if newSourceBase == "passphrase" {

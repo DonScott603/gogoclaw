@@ -327,6 +327,28 @@ func TestCleanupStagingFiles(t *testing.T) {
 	}
 }
 
+func TestPromoteKeyFilesMissingOldKey(t *testing.T) {
+	dir := tempConfigDir(t)
+	d := filepath.Join(dir, "data")
+
+	// Do NOT create .encryption_key — only create staging file.
+	newKey, _ := storage.GenerateKey()
+	writeBase64Key(t, filepath.Join(d, stagingKeyFile), newKey)
+
+	err := PromoteKeyFiles(dir, "auto-key", "auto-key")
+	if err == nil {
+		t.Fatal("expected error when old key file is missing")
+	}
+	if !contains(err.Error(), "missing") {
+		t.Fatalf("error should mention missing file, got: %s", err.Error())
+	}
+
+	// Staging file should still exist (not renamed).
+	if !fileExists(filepath.Join(d, stagingKeyFile)) {
+		t.Fatal("staging file should not be renamed when promotion is aborted")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
