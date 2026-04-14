@@ -49,6 +49,10 @@ func RotateKeys(ctx context.Context, cfg RotateConfig) (*RotateResult, error) {
 	result := &RotateResult{}
 
 	// --- SQLite rotation ---
+	if _, err := os.Stat(cfg.DBPath); err != nil {
+		return nil, fmt.Errorf("rotation: database path does not exist: %s", cfg.DBPath)
+	}
+
 	db, err := sql.Open("sqlite", cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("rotation: open db: %w", err)
@@ -114,7 +118,7 @@ func rotateEncryptedRows(ctx context.Context, db *sql.DB, oldEnc, newEnc *Encryp
 			rows, err = db.QueryContext(ctx,
 				`SELECT id, conversation_id, role, content, tool_calls, created_at
 				 FROM messages WHERE encrypted = 1
-				   AND (created_at > ? OR (created_at = ? AND id > ?))
+				   AND (datetime(created_at) > datetime(?) OR (datetime(created_at) = datetime(?) AND id > ?))
 				 ORDER BY created_at ASC, id ASC LIMIT ?`,
 				cursorCreatedAt, cursorCreatedAt, cursorID, rotationBatchSize)
 		}

@@ -993,3 +993,113 @@ func TestRotateKeysEncryptedRowsSameTimestamp(t *testing.T) {
 		}
 	}
 }
+
+func TestRotateKeysEncryptedRowsMultipleBatches(t *testing.T) {
+	dbPath := newRotationTestDB(t)
+	ctx := context.Background()
+
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+
+	// Insert 150 encrypted rows — exceeds batch size (100) to exercise pagination.
+	const rowCount = 150
+	baseTime := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	// Batch insert in a single connection for efficiency and WAL consistency.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < rowCount; i++ {
+		id := fmt.Sprintf("msg-%03d", i)
+		content := fmt.Sprintf("content-%03d", i)
+		ts := baseTime.Add(time.Duration(i) * time.Second)
+		aad := BuildMessageAAD(id, "conv-1", "user")
+		ct, err := keyA.Encrypt([]byte(content), aad)
+		if err != nil {
+			t.Fatalf("encrypt %s: %v", id, err)
+		}
+		b64 := base64.StdEncoding.EncodeToString(ct)
+		if _, err := db.Exec(
+			`INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, token_count, created_at, encrypted)
+			 VALUES (?, 'conv-1', 'user', ?, '', '', 0, ?, 1)`,
+			id, b64, ts.Format("2006-01-02 15:04:05"),
+		); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	// Verify all rows were inserted correctly.
+	var count int
+	db.QueryRow(`SELECT COUNT(*) FROM messages WHERE encrypted = 1`).Scan(&count)
+	db.Close()
+	if count != rowCount {
+		t.Fatalf("pre-rotation: encrypted row count = %d, want %d", count, rowCount)
+	}
+
+	result, err := RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       dbPath,
+	})
+	if err != nil {
+		t.Fatalf("RotateKeys: %v", err)
+	}
+
+	if result.MessagesRotated != rowCount {
+		t.Errorf("MessagesRotated = %d, want %d", result.MessagesRotated, rowCount)
+	}
+	if result.MessagesSkipped != 0 {
+		t.Errorf("MessagesSkipped = %d, want 0", result.MessagesSkipped)
+	}
+
+	// Verify every row decrypts with key B and does NOT decrypt with key A.
+	for i := 0; i < rowCount; i++ {
+		id := fmt.Sprintf("msg-%03d", i)
+		expectedContent := fmt.Sprintf("content-%03d", i)
+		aad := BuildMessageAAD(id, "conv-1", "user")
+
+		content, _, encFlag := readMessageContent(t, dbPath, id)
+		if encFlag != 1 {
+			t.Errorf("%s: encrypted flag = %d, want 1", id, encFlag)
+			continue
+		}
+
+		ct, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			t.Errorf("%s: base64 decode: %v", id, err)
+			continue
+		}
+
+		plain, err := keyB.Decrypt(ct, aad)
+		if err != nil {
+			t.Errorf("%s: decrypt with new key failed: %v", id, err)
+			continue
+		}
+		if string(plain) != expectedContent {
+			t.Errorf("%s: content = %q, want %q", id, string(plain), expectedContent)
+		}
+
+		if _, err := keyA.Decrypt(ct, aad); err == nil {
+			t.Errorf("%s: should NOT decrypt with old key", id)
+		}
+	}
+}
+
+func TestRotateKeysMissingDBPath(t *testing.T) {
+	ctx := context.Background()
+	keyA := newTestEncryptor(t)
+	keyB := newTestEncryptor(t)
+
+	_, err := RotateKeys(ctx, RotateConfig{
+		OldEncryptor: keyA,
+		NewEncryptor: keyB,
+		DBPath:       "/nonexistent/path/to/db.sqlite",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing DB path")
+	}
+	if !strings.Contains(err.Error(), "database path does not exist") {
+		t.Errorf("error = %q, want 'database path does not exist'", err.Error())
+	}
+}
