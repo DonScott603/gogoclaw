@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
+	"time"
 
 	"github.com/DonScott603/gogoclaw/internal/memory"
 	"github.com/DonScott603/gogoclaw/internal/provider"
@@ -120,25 +122,38 @@ func (e *Engine) persistAndAppendTool(ctx context.Context, session *Session, msg
 // Send sends a user message, handles any tool call loops, and returns the
 // final assistant text response (non-streaming).
 func (e *Engine) Send(ctx context.Context, session *Session, userMessage string) (string, error) {
+	// Apply any completed background summarization from a previous turn
+	// BEFORE appending the new user message.
+	e.applyPendingSummary(session)
+
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
 		return "", err
 	}
 
-	e.maybeSummarize(ctx, session)
-	return e.runToolLoop(ctx, session)
+	result, err := e.runToolLoop(ctx, session)
+	if err != nil {
+		return "", err
+	}
+
+	// After the final assistant response, check if we should start
+	// background summarization for next time.
+	e.maybeStartSummarization(ctx, session)
+
+	return result, nil
 }
 
 // SendStream sends a user message and returns a channel of streaming chunks.
 // After streaming completes, if the response contains tool calls, it falls back
 // to non-streaming mode for the tool loop and returns the final text on the channel.
 func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage string) (<-chan provider.StreamChunk, error) {
+	// Apply any completed background summarization BEFORE the new turn.
+	e.applyPendingSummary(session)
+
 	userMsg := provider.Message{Role: "user", Content: userMessage}
 	if err := e.persistAndAppendUser(ctx, session, userMsg); err != nil {
 		return nil, err
 	}
-
-	e.maybeSummarize(ctx, session)
 
 	messages := e.buildMessages(session)
 	req := e.buildRequest(messages)
@@ -171,27 +186,32 @@ func (e *Engine) SendStream(ctx context.Context, session *Session, userMessage s
 			}
 			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
-				return
+				return // error path — do NOT start summarization
 			}
 
 			if err := e.dispatchToolCalls(ctx, session, toolCalls); err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
-				return
+				return // error path — do NOT start summarization
 			}
 
 			finalText, err := e.runToolLoop(ctx, session)
 			if err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
-				return
+				return // error path — do NOT start summarization
 			}
 			out <- provider.StreamChunk{Content: "\n" + finalText}
 		} else {
 			assistantMsg := provider.Message{Role: "assistant", Content: fullContent}
 			if err := e.persistAndAppendAssistant(ctx, session, assistantMsg); err != nil {
 				out <- provider.StreamChunk{Error: err, Done: true}
-				return
+				return // error path — do NOT start summarization
 			}
 		}
+
+		// After successful final assistant response, check if we should
+		// start background summarization for next time.
+		// NOT in a defer — must not run on error-return paths above.
+		e.maybeStartSummarization(ctx, session)
 	}()
 
 	return out, nil
@@ -310,16 +330,124 @@ func (e *Engine) runToolLoop(ctx context.Context, session *Session) (string, err
 	return "", fmt.Errorf("engine: exceeded maximum tool call rounds (%d)", maxToolRounds)
 }
 
-// maybeSummarize runs rolling summarization if the history exceeds the threshold.
-func (e *Engine) maybeSummarize(ctx context.Context, session *Session) {
-	h := session.GetHistory()
-
-	result, err := e.summarizer.MaybeSummarize(ctx, h, session.ConversationID)
-	if err != nil || result == nil {
+// applyPendingSummary checks for a completed background summarization and
+// reconciles it with the current session history. Called at the top of
+// Send() and SendStream() BEFORE appending the new user message.
+func (e *Engine) applyPendingSummary(session *Session) {
+	if session.PendingSummary == nil {
 		return
 	}
 
-	session.SetHistory(result.RemainingHistory)
+	// Non-blocking check.
+	select {
+	case pending := <-session.PendingSummary:
+		if pending == nil || pending.Result == nil {
+			return
+		}
+		e.reconcileHistory(session, pending)
+	default:
+		// No pending result — nothing to do.
+	}
+}
+
+// reconcileHistory merges a completed summarization result with the current
+// session history, preserving any messages added since the snapshot was taken.
+//
+// Relies on the append-only invariant: between snapshot capture and this call,
+// history may only have had messages appended at the end.
+func (e *Engine) reconcileHistory(session *Session, pending *PendingSummaryResult) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	currentLen := len(session.History)
+	snapshotLen := pending.SnapshotLen
+
+	if snapshotLen < 0 || snapshotLen > currentLen {
+		log.Printf("engine: invalid pending summary snapshotLen=%d, currentLen=%d — discarding",
+			snapshotLen, currentLen)
+		return
+	}
+
+	if pending.Result.RemainingHistory == nil {
+		log.Printf("engine: pending summary has nil RemainingHistory — discarding")
+		return
+	}
+
+	// Messages appended after the snapshot was taken.
+	var newMessages []provider.Message
+	if currentLen > snapshotLen {
+		newMessages = make([]provider.Message, currentLen-snapshotLen)
+		copy(newMessages, session.History[snapshotLen:])
+	}
+
+	// RemainingHistory already has: [summary system msg] + [kept messages from the snapshot]
+	// We append messages that arrived while summarization was in-flight.
+	reconciled := make([]provider.Message, 0, len(pending.Result.RemainingHistory)+len(newMessages))
+	reconciled = append(reconciled, pending.Result.RemainingHistory...)
+	reconciled = append(reconciled, newMessages...)
+
+	session.History = reconciled
+
+	log.Printf("engine: applied pending summary — snapshot=%d, current=%d, reconciled=%d",
+		snapshotLen, currentLen, len(reconciled))
+}
+
+// maybeStartSummarization launches a background summarization goroutine if
+// the session history exceeds the token threshold and no summarization is
+// already in-flight. Called AFTER the final assistant message is appended.
+func (e *Engine) maybeStartSummarization(ctx context.Context, session *Session) {
+	if e.summarizer == nil {
+		return
+	}
+
+	if !session.Summarizing.CompareAndSwap(false, true) {
+		return
+	}
+
+	// Defensive — normally done at session creation.
+	session.InitAsync()
+
+	// Take a snapshot of history under lock.
+	history := session.GetHistory()
+	snapshotLen := len(history)
+	convID := session.ConversationID
+
+	go func() {
+		defer session.Summarizing.Store(false)
+
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+		defer cancel()
+
+		result, err := e.summarizer.MaybeSummarize(bgCtx, history, convID)
+		if err != nil {
+			log.Printf("engine: background summarization failed: %v", err)
+			return
+		}
+		if result == nil {
+			return // under threshold, nothing to do
+		}
+
+		pending := &PendingSummaryResult{
+			Result:      result,
+			SnapshotLen: snapshotLen,
+		}
+		select {
+		case session.PendingSummary <- pending:
+		default:
+			// Channel full — drain stale result and replace with newer one.
+			select {
+			case <-session.PendingSummary:
+			default:
+			}
+			select {
+			case session.PendingSummary <- pending:
+			default:
+				log.Printf("engine: warning — failed to deliver pending summary after drain")
+			}
+		}
+
+		log.Printf("engine: background summarization complete — %d facts extracted", len(result.FactsExtracted))
+	}()
 }
 
 // ToolDefinitionsJSON returns tool definitions as raw JSON for debug/display.

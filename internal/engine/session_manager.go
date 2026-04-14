@@ -77,6 +77,7 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, channel, convID strin
 		}
 	}
 
+	s.InitAsync()
 	sm.sessions[key] = s
 	return s, nil
 }

@@ -57,11 +57,13 @@ func newTestEngine(p provider.Provider, prompt string) *Engine {
 }
 
 func newTestSession(channel, convID string) *Session {
-	return &Session{
+	s := &Session{
 		ID:             channel + ":" + convID,
 		ConversationID: convID,
 		Channel:        channel,
 	}
+	s.InitAsync()
+	return s
 }
 
 func TestEngineSend(t *testing.T) {
