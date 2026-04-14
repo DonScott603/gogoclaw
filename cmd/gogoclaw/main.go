@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/DonScott603/gogoclaw/internal/agent"
@@ -16,7 +19,9 @@ import (
 	"github.com/DonScott603/gogoclaw/internal/config"
 	"github.com/DonScott603/gogoclaw/internal/engine"
 	"github.com/DonScott603/gogoclaw/internal/pii"
+	"github.com/DonScott603/gogoclaw/internal/storage"
 	"github.com/DonScott603/gogoclaw/internal/tui"
+	"github.com/DonScott603/gogoclaw/internal/util"
 )
 
 var version = "dev"
@@ -28,8 +33,12 @@ func main() {
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
-		fmt.Println("Key rotation is not yet implemented (planned for a future phase).")
-		os.Exit(0)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("cannot determine home directory: %v", err)
+		}
+		runRotateKey(filepath.Join(home, ".gogoclaw"))
+		return
 	}
 
 	// Set up graceful shutdown via signal.NotifyContext.
@@ -197,4 +206,155 @@ type bootstrapAdapter struct {
 
 func (b *bootstrapAdapter) Send(ctx context.Context, text string) (string, error) {
 	return b.engine.Send(ctx, b.session, text)
+}
+
+func runRotateKey(configDir string) {
+	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
+	newPassphrase := fs.String("new-passphrase", "", "New passphrase (derives key via Argon2id with new salt)")
+	generateNewKey := fs.Bool("generate-new-key", false, "Generate a new random auto-key (default if no --new-passphrase)")
+	dryRun := fs.Bool("dry-run", false, "Show what would be rotated without making changes")
+	fs.Parse(os.Args[2:])
+
+	if *newPassphrase != "" && *generateNewKey {
+		fmt.Fprintln(os.Stderr, "Error: --new-passphrase and --generate-new-key are mutually exclusive.")
+		os.Exit(1)
+	}
+
+	// Load env file and config.
+	agent.LoadEnvFile(configDir)
+	cfg, err := config.NewLoader(configDir).Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !cfg.Storage.Conversations.Encrypt {
+		fmt.Fprintln(os.Stderr, "Encryption is not enabled in config. Enable storage.conversations.encrypt first.")
+		os.Exit(1)
+	}
+
+	// Resolve OLD key.
+	oldEnc, err := app.ResolveEncryptor(cfg, configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving current encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	if oldEnc == nil {
+		fmt.Fprintln(os.Stderr, "Error: encryption is enabled but no key could be resolved.")
+		os.Exit(1)
+	}
+
+	// Determine old key source.
+	passphraseEnv := cfg.Storage.Conversations.PassphraseEnv
+	if passphraseEnv == "" {
+		passphraseEnv = "GOGOCLAW_DB_PASSPHRASE"
+	}
+	oldSource := "auto-key"
+	if os.Getenv(passphraseEnv) != "" {
+		oldSource = "passphrase"
+	}
+
+	// Resolve paths.
+	dbPath := util.ExpandHome(cfg.Storage.Conversations.Path)
+	if dbPath == "" {
+		dbPath = filepath.Join(configDir, "data", "conversations.db")
+	}
+	auditPath := util.ExpandHome(cfg.Logging.Audit.Path)
+	if auditPath == "" {
+		auditPath = filepath.Join(configDir, "audit", "gogoclaw.jsonl")
+	}
+
+	// Resolve NEW key.
+	newEnc, newSource, err := app.ResolveNewEncryptor(configDir, *newPassphrase, *dryRun)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving new key: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Strip "(staged)" and "(dry-run)" suffixes for promotion logic.
+	newSourceBase := newSource
+	for _, suffix := range []string{" (staged)", " (dry-run)"} {
+		newSourceBase = strings.TrimSuffix(newSourceBase, suffix)
+	}
+
+	// Get pre-rotation stats.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	stats, err := storage.GetRotationStats(ctx, dbPath, auditPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting rotation stats: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Print summary.
+	fmt.Println("Encryption key rotation")
+	fmt.Printf("  Old key source: %s\n", oldSource)
+	fmt.Printf("  New key source: %s\n", newSource)
+	fmt.Printf("  Database: %s\n", dbPath)
+	fmt.Printf("  Audit log: %s\n", auditPath)
+	fmt.Printf("  Encrypted messages: %d\n", stats.EncryptedMessages)
+	fmt.Printf("  Plaintext messages: %d\n", stats.PlaintextMessages)
+	fmt.Printf("  Encrypted audit lines: %d\n", stats.EncryptedAuditLines)
+	fmt.Printf("  Plaintext audit lines: %d\n", stats.AuditLines-stats.EncryptedAuditLines)
+
+	if *dryRun {
+		fmt.Println("\nDry run — no changes made.")
+		return
+	}
+
+	// Confirmation.
+	fmt.Println("\nWARNING: GoGoClaw must not be running during key rotation.")
+	fmt.Print("\nProceed? [y/N] ")
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(answer)
+	if answer != "y" && answer != "Y" {
+		fmt.Println("Aborted.")
+		return
+	}
+
+	// Run rotation.
+	result, err := storage.RotateKeys(ctx, storage.RotateConfig{
+		OldEncryptor: oldEnc,
+		NewEncryptor: newEnc,
+		DBPath:       dbPath,
+		AuditPath:    auditPath,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		fmt.Fprintln(os.Stderr, "\nRotation failed. Some batches may have already been committed under the new key.")
+		fmt.Fprintln(os.Stderr, "The new key is saved in a staging file and will be reused automatically.")
+		fmt.Fprintln(os.Stderr, "To complete: re-run 'gogoclaw rotate-key' with the same flags.")
+		if newSourceBase == "passphrase" {
+			fmt.Fprintln(os.Stderr, "You must provide the same --new-passphrase value on re-run.")
+		}
+		os.Exit(1)
+	}
+
+	// Success — promote and clean up.
+	if err := app.PromoteKeyFiles(configDir, oldSource, newSourceBase); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: key promotion failed: %v\n", err)
+		fmt.Fprintln(os.Stderr, "Rotation succeeded but staging files were not promoted. Promote manually.")
+		os.Exit(1)
+	}
+	app.CleanupStagingFiles(configDir)
+
+	fmt.Println("\nKey rotation complete.")
+	fmt.Printf("  Messages re-encrypted: %d\n", result.MessagesRotated)
+	fmt.Printf("  Messages skipped (already rotated): %d\n", result.MessagesSkipped)
+	fmt.Printf("  Plaintext messages encrypted: %d\n", result.PlaintextEncrypted)
+	fmt.Printf("  Audit lines re-encrypted: %d\n", result.AuditLinesRotated)
+	fmt.Printf("  Audit lines unchanged: %d\n", result.AuditLinesPassedThru)
+
+	bakFile := filepath.Join(configDir, "data", ".encryption_key.bak")
+	if oldSource == "passphrase" {
+		bakFile = filepath.Join(configDir, "data", ".encryption_salt.bak")
+	}
+	fmt.Printf("\nOld key backed up to %s.\n", bakFile)
+	fmt.Println("Delete this backup once you've verified everything works.")
+
+	if newSourceBase == "passphrase" {
+		fmt.Printf("\nIMPORTANT: Ensure your passphrase env var (%s) is set to the new\npassphrase before starting GoGoClaw.\n", passphraseEnv)
+	}
 }
