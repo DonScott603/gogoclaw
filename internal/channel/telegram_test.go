@@ -3,6 +3,10 @@ package channel
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DonScott603/gogoclaw/internal/config"
+	tele "gopkg.in/telebot.v4"
 )
 
 func TestSplitMessageShort(t *testing.T) {
@@ -168,5 +172,112 @@ func TestTelegramGroupChatRejected(t *testing.T) {
 	}
 	if isGroupChat("private") {
 		t.Error("private should be allowed")
+	}
+}
+
+func TestResolveTelegramPollerLongPolling(t *testing.T) {
+	// Empty WebhookURL → long-polling mode.
+	poller, webhookMode := resolveTelegramPoller(config.ChannelConfig{})
+	if webhookMode {
+		t.Error("expected webhookMode=false for empty WebhookURL")
+	}
+	lp, ok := poller.(*tele.LongPoller)
+	if !ok {
+		t.Fatalf("expected *tele.LongPoller, got %T", poller)
+	}
+	// Default timeout.
+	if lp.Timeout != 10*time.Second {
+		t.Errorf("default timeout = %v, want 10s", lp.Timeout)
+	}
+
+	// Custom timeout.
+	poller2, _ := resolveTelegramPoller(config.ChannelConfig{PollingTimeout: 30 * time.Second})
+	lp2 := poller2.(*tele.LongPoller)
+	if lp2.Timeout != 30*time.Second {
+		t.Errorf("custom timeout = %v, want 30s", lp2.Timeout)
+	}
+}
+
+func TestResolveTelegramPollerWebhook(t *testing.T) {
+	poller, webhookMode := resolveTelegramPoller(config.ChannelConfig{
+		WebhookURL: "https://example.com/webhook",
+	})
+	if !webhookMode {
+		t.Error("expected webhookMode=true")
+	}
+	wh, ok := poller.(*tele.Webhook)
+	if !ok {
+		t.Fatalf("expected *tele.Webhook, got %T", poller)
+	}
+	// Default listen address.
+	if wh.Listen != ":8443" {
+		t.Errorf("default listen = %q, want ':8443'", wh.Listen)
+	}
+	if wh.Endpoint == nil || wh.Endpoint.PublicURL != "https://example.com/webhook" {
+		t.Errorf("PublicURL not set correctly")
+	}
+
+	// Custom listen address.
+	poller2, _ := resolveTelegramPoller(config.ChannelConfig{
+		WebhookURL:    "https://example.com/wh",
+		WebhookListen: ":9443",
+	})
+	wh2 := poller2.(*tele.Webhook)
+	if wh2.Listen != ":9443" {
+		t.Errorf("custom listen = %q, want ':9443'", wh2.Listen)
+	}
+}
+
+func TestResolveTelegramPollerWebhookWithTLS(t *testing.T) {
+	// Cert + key → both Endpoint.Cert and TLS populated.
+	poller, _ := resolveTelegramPoller(config.ChannelConfig{
+		WebhookURL:      "https://example.com/webhook",
+		WebhookCertFile: "/path/cert.pem",
+		WebhookKeyFile:  "/path/key.pem",
+	})
+	wh := poller.(*tele.Webhook)
+	if wh.Endpoint.Cert != "/path/cert.pem" {
+		t.Errorf("Endpoint.Cert = %q, want '/path/cert.pem'", wh.Endpoint.Cert)
+	}
+	if wh.TLS == nil {
+		t.Fatal("expected TLS to be set")
+	}
+	if wh.TLS.Cert != "/path/cert.pem" || wh.TLS.Key != "/path/key.pem" {
+		t.Errorf("TLS = {Cert:%q, Key:%q}, want cert.pem/key.pem", wh.TLS.Cert, wh.TLS.Key)
+	}
+
+	// Cert without key → Endpoint.Cert set, TLS nil (for Telegram cert upload only).
+	poller2, _ := resolveTelegramPoller(config.ChannelConfig{
+		WebhookURL:      "https://example.com/webhook",
+		WebhookCertFile: "/path/cert.pem",
+	})
+	wh2 := poller2.(*tele.Webhook)
+	if wh2.Endpoint.Cert != "/path/cert.pem" {
+		t.Errorf("Endpoint.Cert = %q, want '/path/cert.pem'", wh2.Endpoint.Cert)
+	}
+	if wh2.TLS != nil {
+		t.Error("TLS should be nil when no key file provided")
+	}
+}
+
+func TestResolveTelegramPollerWebhookSecret(t *testing.T) {
+	poller, _ := resolveTelegramPoller(config.ChannelConfig{
+		WebhookURL:    "https://example.com/webhook",
+		WebhookSecret: "my-secret-token",
+	})
+	wh := poller.(*tele.Webhook)
+	if wh.SecretToken != "my-secret-token" {
+		t.Errorf("SecretToken = %q, want 'my-secret-token'", wh.SecretToken)
+	}
+}
+
+func TestWebhookHealthyPollingMode(t *testing.T) {
+	tc := &TelegramChannel{webhookMode: false}
+	healthy, desc := tc.WebhookHealthy()
+	if !healthy {
+		t.Error("expected healthy=true for polling mode")
+	}
+	if desc != "long-polling" {
+		t.Errorf("desc = %q, want 'long-polling'", desc)
 	}
 }

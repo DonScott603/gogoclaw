@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,7 @@ type TelegramChannel struct {
 	allowedUsers   map[string]bool // usernames and string user IDs
 	bot            *tele.Bot
 	ctx            context.Context // shutdown context
+	webhookMode    bool
 
 	mu      sync.Mutex
 	handler func(ctx context.Context, msg types.InboundMessage)
@@ -59,16 +61,21 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		return nil, fmt.Errorf("channel: telegram: bot token not set (env var %q is empty)", cfg.Channel.TokenEnv)
 	}
 
-	pollTimeout := cfg.Channel.PollingTimeout
-	if pollTimeout <= 0 {
-		pollTimeout = 10 * time.Second
-	}
+	poller, webhookMode := resolveTelegramPoller(cfg.Channel)
 
 	bot, err := tele.NewBot(tele.Settings{
 		Token:  token,
-		Poller: &tele.LongPoller{Timeout: pollTimeout},
+		Poller: poller,
 	})
-	if err != nil {
+	if err != nil && webhookMode {
+		log.Printf("telegram: bot construction with webhook config failed (%v), retrying with long-polling", err)
+		fallbackPoller, _ := resolveTelegramPoller(config.ChannelConfig{PollingTimeout: cfg.Channel.PollingTimeout})
+		bot, err = tele.NewBot(tele.Settings{Token: token, Poller: fallbackPoller})
+		if err != nil {
+			return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
+		}
+		webhookMode = false
+	} else if err != nil {
 		return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
 	}
 
@@ -91,6 +98,7 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		allowedUsers:   allowed,
 		bot:            bot,
 		ctx:            shutdownCtx,
+		webhookMode:    webhookMode,
 	}
 
 	bot.Handle(tele.OnText, tc.onText)
@@ -100,11 +108,63 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 	return tc, nil
 }
 
+// resolveTelegramPoller returns the appropriate poller and whether webhook mode is active.
+// This is a pure function of config — no side effects, no network calls.
+func resolveTelegramPoller(cfg config.ChannelConfig) (tele.Poller, bool) {
+	if cfg.WebhookURL == "" {
+		pollTimeout := cfg.PollingTimeout
+		if pollTimeout <= 0 {
+			pollTimeout = 10 * time.Second
+		}
+		return &tele.LongPoller{Timeout: pollTimeout}, false
+	}
+
+	listen := cfg.WebhookListen
+	if listen == "" {
+		listen = ":8443"
+	}
+
+	wh := &tele.Webhook{
+		Listen: listen,
+		Endpoint: &tele.WebhookEndpoint{
+			PublicURL: cfg.WebhookURL,
+		},
+	}
+
+	if cfg.WebhookCertFile != "" {
+		wh.Endpoint.Cert = cfg.WebhookCertFile
+		if cfg.WebhookKeyFile != "" {
+			wh.TLS = &tele.WebhookTLS{
+				Key:  cfg.WebhookKeyFile,
+				Cert: cfg.WebhookCertFile,
+			}
+		}
+	}
+
+	if cfg.WebhookSecret != "" {
+		wh.SecretToken = cfg.WebhookSecret
+	}
+
+	return wh, true
+}
+
 // Name returns the channel name.
 func (tc *TelegramChannel) Name() string { return "telegram" }
 
-// Start begins polling for Telegram updates (blocking).
+// Start begins polling or webhook listening for Telegram updates (blocking).
 func (tc *TelegramChannel) Start(ctx context.Context) error {
+	if tc.auditLogger != nil {
+		if tc.webhookMode {
+			tc.auditLogger.Log(audit.EventTelegramWebhook, map[string]string{
+				"action": "webhook_mode_started",
+				"url":    tc.cfg.WebhookURL,
+			})
+		} else {
+			tc.auditLogger.Log(audit.EventTelegramWebhook, map[string]string{
+				"action": "polling_mode_started",
+			})
+		}
+	}
 	go func() {
 		<-ctx.Done()
 		tc.bot.Stop()
@@ -115,8 +175,39 @@ func (tc *TelegramChannel) Start(ctx context.Context) error {
 
 // Stop gracefully stops the Telegram bot.
 func (tc *TelegramChannel) Stop(_ context.Context) error {
+	if tc.webhookMode {
+		if tc.auditLogger != nil {
+			tc.auditLogger.Log(audit.EventTelegramWebhook, map[string]string{
+				"action": "remove_webhook_attempted",
+			})
+		}
+		if err := tc.bot.RemoveWebhook(false); err != nil {
+			log.Printf("telegram: failed to remove webhook: %v", err)
+		}
+	}
 	tc.bot.Stop()
 	return nil
+}
+
+// WebhookHealthy reports webhook status. Returns (true, description) if healthy.
+// For long-polling mode, always returns healthy with mode description.
+func (tc *TelegramChannel) WebhookHealthy() (bool, string) {
+	if !tc.webhookMode {
+		return true, "long-polling"
+	}
+	info, err := tc.bot.Webhook()
+	if err != nil {
+		return false, fmt.Sprintf("webhook check failed: %v", err)
+	}
+	if info.ErrorUnixtime > 0 {
+		return false, fmt.Sprintf("webhook error: %s (at %d)", info.ErrorMessage, info.ErrorUnixtime)
+	}
+	return true, fmt.Sprintf("webhook active: %s", info.Endpoint.PublicURL)
+}
+
+// IsWebhookMode returns whether the channel is using webhook mode.
+func (tc *TelegramChannel) IsWebhookMode() bool {
+	return tc.webhookMode
 }
 
 // Send sends a message to a Telegram chat, splitting if necessary.

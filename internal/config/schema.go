@@ -147,6 +147,13 @@ type ChannelConfig struct {
 	APIKeyEnv      string        `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
 	AllowedOrigins []string      `yaml:"allowed_origins,omitempty" json:"allowed_origins,omitempty"`
 	RateLimit      int           `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"` // requests per minute
+
+	// Webhook configuration (Telegram)
+	WebhookURL      string `yaml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
+	WebhookListen   string `yaml:"webhook_listen,omitempty" json:"webhook_listen,omitempty"`
+	WebhookCertFile string `yaml:"webhook_cert_file,omitempty" json:"webhook_cert_file,omitempty"`
+	WebhookKeyFile  string `yaml:"webhook_key_file,omitempty" json:"webhook_key_file,omitempty"`
+	WebhookSecret   string `yaml:"webhook_secret,omitempty" json:"webhook_secret,omitempty"`
 }
 
 // NetworkConfig defines the global network allowlist.

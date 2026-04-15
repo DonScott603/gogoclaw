@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/DonScott603/gogoclaw/internal/channel"
@@ -20,7 +21,11 @@ func InitTelegram(cfg channel.TelegramConfig) (*TelegramDeps, error) {
 	}
 
 	go func() {
-		log.Printf("telegram: bot starting (polling)")
+		mode := "polling"
+		if cfg.Channel.WebhookURL != "" {
+			mode = fmt.Sprintf("webhook (%s)", cfg.Channel.WebhookURL)
+		}
+		log.Printf("telegram: bot starting (%s)", mode)
 		if err := tc.Start(context.Background()); err != nil {
 			log.Printf("telegram: %v", err)
 		}

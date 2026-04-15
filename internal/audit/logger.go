@@ -29,6 +29,7 @@ const (
 	EventSecretScrubbed EventType = "secret_scrubbed"
 	EventRESTRequest      EventType = "rest_request"
 	EventTelegramMessage  EventType = "telegram_message"
+	EventTelegramWebhook  EventType = "telegram_webhook"
 )
 
 // Event is a single audit log entry.

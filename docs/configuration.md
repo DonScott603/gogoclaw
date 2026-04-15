@@ -297,6 +297,11 @@ allowed_origins:
 | `token_env` | string | `GOGOCLAW_TELEGRAM_TOKEN` | Env var name containing the bot token |
 | `allowed_users` | list | `[]` | Usernames or user IDs allowed to interact. Empty list means no access (fail-closed). |
 | `polling_timeout` | duration | `10s` | Long-polling timeout for updates |
+| `webhook_url` | string | `""` | Public URL Telegram sends updates to. If set, enables webhook mode. |
+| `webhook_listen` | string | `":8443"` | Local address for the webhook listener |
+| `webhook_cert_file` | string | `""` | Path to TLS cert PEM (required for self-signed certs) |
+| `webhook_key_file` | string | `""` | Path to TLS key PEM |
+| `webhook_secret` | string | `""` | Secret token for request verification (Bot API 6.1+) |
 
 ```yaml
 name: "telegram"
@@ -305,9 +310,17 @@ token_env: "GOGOCLAW_TELEGRAM_TOKEN"
 # The bot will not respond until at least one username or user ID is added below.
 allowed_users: []
 polling_timeout: 10s
+# Webhook mode (optional — leave webhook_url empty for long-polling):
+# webhook_url: "https://your-domain.com/telegram/webhook"
+# webhook_listen: ":8443"
+# webhook_cert_file: ""
+# webhook_key_file: ""
+# webhook_secret: ""
 ```
 
 **Security note:** The `allowed_users` list is fail-closed. An empty list means no one can interact with the bot. You must explicitly add usernames or Telegram user IDs before the bot will respond to anyone.
+
+**Webhook vs. long-polling:** Long-polling (default) is simpler to set up and works behind NAT, making it ideal for development. Webhook mode provides lower latency and better resource efficiency but requires a public HTTPS URL reachable by Telegram's servers.
 
 ---
 

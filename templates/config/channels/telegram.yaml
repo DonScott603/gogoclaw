@@ -3,3 +3,9 @@ enabled: false
 token_env: "GOGOCLAW_TELEGRAM_TOKEN"
 allowed_users: []
 polling_timeout: 10s
+# Webhook mode (optional — leave webhook_url empty for long-polling):
+# webhook_url: "https://your-domain.com/telegram/webhook"
+# webhook_listen: ":8443"
+# webhook_cert_file: ""   # Path to TLS cert PEM (required for self-signed certs)
+# webhook_key_file: ""    # Path to TLS key PEM
+# webhook_secret: ""      # Secret token for request verification (Bot API 6.1+)
