@@ -69,7 +69,10 @@ func (s *Summarizer) MaybeSummarize(ctx context.Context, history []provider.Mess
 			continue // tool results captured via condensed assistant tool calls
 		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
 			condensed := condensedToolCalls(msg.ToolCalls)
-			if msg.Content != "" {
+			if condensed == "" {
+				// All tool calls condensed to empty — format as normal assistant message.
+				b.WriteString(fmt.Sprintf("assistant: %s\n", msg.Content))
+			} else if msg.Content != "" {
 				b.WriteString(fmt.Sprintf("assistant: %s [Tools: %s]\n", msg.Content, condensed))
 			} else {
 				b.WriteString(fmt.Sprintf("assistant: [Tools: %s]\n", condensed))

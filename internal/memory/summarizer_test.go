@@ -288,6 +288,17 @@ func TestSummarizerIncludesToolCalls(t *testing.T) {
 	}
 }
 
+func TestCondensedToolCallsAllEmpty(t *testing.T) {
+	tcs := []provider.ToolCall{
+		{Name: "", Arguments: nil},
+		{Name: "", Arguments: nil},
+	}
+	result := condensedToolCalls(tcs)
+	if result != "" {
+		t.Errorf("expected empty string for all-empty tool calls, got: %q", result)
+	}
+}
+
 func TestSummarizerSkipsRawToolResultContent(t *testing.T) {
 	var capturedPrompt string
 	p := &capturingProvider{
