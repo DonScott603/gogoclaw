@@ -67,15 +67,7 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		Token:  token,
 		Poller: poller,
 	})
-	if err != nil && webhookMode {
-		log.Printf("telegram: bot construction with webhook config failed (%v), retrying with long-polling", err)
-		fallbackPoller, _ := resolveTelegramPoller(config.ChannelConfig{PollingTimeout: cfg.Channel.PollingTimeout})
-		bot, err = tele.NewBot(tele.Settings{Token: token, Poller: fallbackPoller})
-		if err != nil {
-			return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
-		}
-		webhookMode = false
-	} else if err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
 	}
 

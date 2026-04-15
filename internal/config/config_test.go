@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoaderDefaults(t *testing.T) {
@@ -282,5 +284,39 @@ enabled: true
 	}
 	if !mc.Enabled {
 		t.Error("enabled should be true")
+	}
+}
+
+func TestWebhookConfigParsing(t *testing.T) {
+	yamlData := []byte(`
+name: "telegram"
+enabled: true
+token_env: "GOGOCLAW_TELEGRAM_TOKEN"
+allowed_users: ["alice"]
+polling_timeout: 10s
+webhook_url: "https://example.com/webhook"
+webhook_listen: ":9443"
+webhook_cert_file: "/path/cert.pem"
+webhook_key_file: "/path/key.pem"
+webhook_secret: "my-secret"
+`)
+	var cfg ChannelConfig
+	if err := yaml.Unmarshal(yamlData, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.WebhookURL != "https://example.com/webhook" {
+		t.Errorf("WebhookURL = %q", cfg.WebhookURL)
+	}
+	if cfg.WebhookListen != ":9443" {
+		t.Errorf("WebhookListen = %q", cfg.WebhookListen)
+	}
+	if cfg.WebhookCertFile != "/path/cert.pem" {
+		t.Errorf("WebhookCertFile = %q", cfg.WebhookCertFile)
+	}
+	if cfg.WebhookKeyFile != "/path/key.pem" {
+		t.Errorf("WebhookKeyFile = %q", cfg.WebhookKeyFile)
+	}
+	if cfg.WebhookSecret != "my-secret" {
+		t.Errorf("WebhookSecret = %q", cfg.WebhookSecret)
 	}
 }
