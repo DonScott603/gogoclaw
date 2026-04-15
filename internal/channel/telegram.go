@@ -67,15 +67,7 @@ func NewTelegram(cfg TelegramConfig) (*TelegramChannel, error) {
 		Token:  token,
 		Poller: poller,
 	})
-	if err != nil && webhookMode {
-		log.Printf("telegram: bot construction with webhook config failed (%v), retrying with long-polling", err)
-		fallbackPoller, _ := resolveTelegramPoller(config.ChannelConfig{PollingTimeout: cfg.Channel.PollingTimeout})
-		bot, err = tele.NewBot(tele.Settings{Token: token, Poller: fallbackPoller})
-		if err != nil {
-			return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
-		}
-		webhookMode = false
-	} else if err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("channel: telegram: create bot: %w", err)
 	}
 
@@ -156,12 +148,12 @@ func (tc *TelegramChannel) Start(ctx context.Context) error {
 	if tc.auditLogger != nil {
 		if tc.webhookMode {
 			tc.auditLogger.Log(audit.EventTelegramWebhook, map[string]string{
-				"action": "webhook_mode_started",
+				"action": "webhook_mode_starting",
 				"url":    tc.cfg.WebhookURL,
 			})
 		} else {
 			tc.auditLogger.Log(audit.EventTelegramWebhook, map[string]string{
-				"action": "polling_mode_started",
+				"action": "polling_mode_starting",
 			})
 		}
 	}
@@ -202,7 +194,7 @@ func (tc *TelegramChannel) WebhookHealthy() (bool, string) {
 	if info.ErrorUnixtime > 0 {
 		return false, fmt.Sprintf("webhook error: %s (at %d)", info.ErrorMessage, info.ErrorUnixtime)
 	}
-	return true, fmt.Sprintf("webhook active: %s", info.Endpoint.PublicURL)
+	return true, fmt.Sprintf("webhook active: %s", info.Listen)
 }
 
 // IsWebhookMode returns whether the channel is using webhook mode.

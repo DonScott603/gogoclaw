@@ -22,7 +22,7 @@ func InitTelegram(cfg channel.TelegramConfig) (*TelegramDeps, error) {
 
 	go func() {
 		mode := "polling"
-		if cfg.Channel.WebhookURL != "" {
+		if tc.IsWebhookMode() {
 			mode = fmt.Sprintf("webhook (%s)", cfg.Channel.WebhookURL)
 		}
 		log.Printf("telegram: bot starting (%s)", mode)
