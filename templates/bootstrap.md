@@ -22,8 +22,9 @@ You are helping a new user set up GoGoClaw for the first time. Ask the following
    - **permissive** — only flag highly sensitive items
    - **disabled** — no PII detection
 9. Do you want to enable Telegram bot access? If yes, what env var holds your bot token? (default: GOGOCLAW_TELEGRAM_TOKEN)
-10. Do you want to enable REST API access? (default: yes) If yes, what port? (default: 8080)
-11. What env var should hold your REST API key? (default: GOGOCLAW_REST_API_KEY) You can leave this empty to auto-generate a key on each startup.
+10. If Telegram is enabled: which usernames or user IDs should be allowed to interact with the bot? (comma-separated, or leave empty)
+11. Do you want to enable REST API access? (default: yes) If yes, what port? (default: 8080)
+12. What env var should hold your REST API key? (default: GOGOCLAW_REST_API_KEY) You can leave this empty to auto-generate a key on each startup.
 
 ## Environment Variable Guidance
 
@@ -60,6 +61,7 @@ After the user answers ALL questions, output a final JSON summary wrapped in ```
   ],
   "telegram_enabled": true or false,
   "telegram_token_env": "env var name or empty string",
+  "telegram_allowed_users": ["username_or_id"],
   "rest_enabled": true or false,
   "rest_port": 8080,
   "rest_api_key_env": "env var name or empty string"
