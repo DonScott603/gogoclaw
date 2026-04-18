@@ -30,20 +30,21 @@ type ProviderSummary struct {
 
 // BootstrapSummary is the JSON output parsed from the LLM's bootstrap response.
 type BootstrapSummary struct {
-	UserName        string `json:"user_name"`
-	AgentName       string `json:"agent_name"`
-	Personality     string `json:"personality"`
-	WorkDomain      string `json:"work_domain"`
-	PIIMode         string `json:"pii_mode"`
-	ProviderType    string `json:"provider_type"`
-	ProviderBaseURL string `json:"provider_base_url"`
-	ProviderKeyEnv  string `json:"provider_api_key_env"`
-	ProviderModel   string `json:"provider_model"`
-	TelegramEnabled bool   `json:"telegram_enabled"`
-	TelegramToken   string `json:"telegram_token_env"`
-	RESTEnabled     bool   `json:"rest_enabled"`
-	RESTPort        int    `json:"rest_port"`
-	RESTKeyEnv      string `json:"rest_api_key_env"`
+	UserName          string `json:"user_name"`
+	AgentName         string `json:"agent_name"`
+	Personality       string `json:"personality"`
+	WorkDomain        string `json:"work_domain"`
+	PIIMode           string `json:"pii_mode"`
+	ProviderType      string `json:"provider_type"`
+	ProviderBaseURL   string `json:"provider_base_url"`
+	ProviderKeyEnv    string `json:"provider_api_key_env"`
+	ProviderModel     string `json:"provider_model"`
+	TelegramEnabled   bool   `json:"telegram_enabled"`
+	TelegramToken     string `json:"telegram_token_env"`
+	RESTEnabled       bool   `json:"rest_enabled"`
+	RESTPort          int    `json:"rest_port"`
+	RESTKeyEnv        string `json:"rest_api_key_env"`
+	TelegramAllowlist []string `json:"telegram_allowed_users,omitempty"`
 
 	// Providers holds multiple provider configs. If populated, these take
 	// precedence over the single-provider fields above. The first entry is
@@ -224,7 +225,7 @@ func RunBootstrap(ctx context.Context, sender Sender, configDir string, template
 		return fmt.Errorf("agent: bootstrap write results: %w", err)
 	}
 
-	if summary.TelegramEnabled {
+	if summary.TelegramEnabled && len(summary.TelegramAllowlist) == 0 {
 		fmt.Fprintln(stdout, "Note: Add your Telegram username or user ID to ~/.gogoclaw/channels/telegram.yaml allowed_users before the bot will respond.")
 	}
 
@@ -469,8 +470,19 @@ func writeTelegramChannelYAML(configDir string, s *BootstrapSummary) error {
 		tokenEnv = "GOGOCLAW_TELEGRAM_TOKEN"
 	}
 
-	content := fmt.Sprintf("name: \"telegram\"\nenabled: %t\ntoken_env: %q\n# The bot will not respond until at least one username or user ID is added below.\nallowed_users: []\npolling_timeout: 10s\n",
-		s.TelegramEnabled, tokenEnv)
+	var allowedUsers string
+	if len(s.TelegramAllowlist) == 0 {
+		allowedUsers = "allowed_users: []"
+	} else {
+		lines := []string{"allowed_users:"}
+		for _, user := range s.TelegramAllowlist {
+			lines = append(lines, fmt.Sprintf("  - %q", user))
+		}
+		allowedUsers = strings.Join(lines, "\n")
+	}
+
+	content := fmt.Sprintf("name: \"telegram\"\nenabled: %t\ntoken_env: %q\n%s\npolling_timeout: 10s\n",
+		s.TelegramEnabled, tokenEnv, allowedUsers)
 
 	path := filepath.Join(configDir, "channels", "telegram.yaml")
 	return atomicWriteFile(path, []byte(content), 0644)
