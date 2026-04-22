@@ -350,3 +350,70 @@ func TestSummarizerSkipsRawToolResultContent(t *testing.T) {
 		t.Error("raw tool result content should NOT appear in summarization prompt")
 	}
 }
+
+func TestSummarizerSkipsToolTokens(t *testing.T) {
+	p := &mockProvider{chatResponse: "summary"}
+	s := NewSummarizer(p, 3072, nil)
+
+	// 2 short user messages + 2 short assistant messages + 5 large tool results.
+	// Tool results each 5000 chars → would easily exceed 3072 token threshold if counted.
+	largeToolContent := strings.Repeat("x", 5000)
+	history := []provider.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+		{Role: "tool", Content: largeToolContent, ToolCallID: "c1"},
+		{Role: "tool", Content: largeToolContent, ToolCallID: "c2"},
+		{Role: "tool", Content: largeToolContent, ToolCallID: "c3"},
+		{Role: "tool", Content: largeToolContent, ToolCallID: "c4"},
+		{Role: "tool", Content: largeToolContent, ToolCallID: "c5"},
+		{Role: "user", Content: "ok"},
+		{Role: "assistant", Content: "ok"},
+	}
+
+	result, err := s.MaybeSummarize(context.Background(), history, "test")
+	if err != nil {
+		t.Fatalf("MaybeSummarize: %v", err)
+	}
+	if result != nil {
+		t.Error("summarization should NOT trigger — tool tokens must be excluded and conversation is under 6 user turns")
+	}
+}
+
+func TestSummarizerMinTurnGate(t *testing.T) {
+	p := &mockProvider{chatResponse: "summary"}
+	s := NewSummarizer(p, 100, nil) // low threshold
+
+	// Build history with 3 user messages that are very long — would exceed 100 tokens.
+	longContent := strings.Repeat("word ", 500) // ~500 tokens worth
+	history := []provider.Message{
+		{Role: "user", Content: longContent},
+		{Role: "assistant", Content: longContent},
+		{Role: "user", Content: longContent},
+		{Role: "assistant", Content: longContent},
+		{Role: "user", Content: longContent},
+		{Role: "assistant", Content: longContent},
+	}
+
+	// 3 user turns — under minimum (6), should NOT trigger.
+	result, err := s.MaybeSummarize(context.Background(), history, "test")
+	if err != nil {
+		t.Fatalf("MaybeSummarize: %v", err)
+	}
+	if result != nil {
+		t.Error("summarization should NOT trigger with only 3 user turns")
+	}
+
+	// Add 4 more user/assistant pairs — now 7 user turns, should trigger.
+	for i := 0; i < 4; i++ {
+		history = append(history, provider.Message{Role: "user", Content: longContent})
+		history = append(history, provider.Message{Role: "assistant", Content: longContent})
+	}
+
+	result, err = s.MaybeSummarize(context.Background(), history, "test")
+	if err != nil {
+		t.Fatalf("MaybeSummarize after more turns: %v", err)
+	}
+	if result == nil {
+		t.Fatal("summarization should trigger with 7 user turns over threshold")
+	}
+}

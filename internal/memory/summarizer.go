@@ -18,6 +18,12 @@ Conversation segment:
 
 Respond with ONLY the summary, no preamble.`
 
+// minUserTurnsForSummarization is the minimum number of user messages
+// required before mid-conversation summarization can trigger. This prevents
+// premature summarization on short conversations where tool results
+// artificially inflate the token count.
+const minUserTurnsForSummarization = 6
+
 // Summarizer handles rolling summarization of conversation history.
 type Summarizer struct {
 	provider        provider.Provider
@@ -47,6 +53,17 @@ type SummarizeResult struct {
 // MaybeSummarize checks if history exceeds the threshold and summarizes if so.
 // Returns nil if no summarization was needed.
 func (s *Summarizer) MaybeSummarize(ctx context.Context, history []provider.Message, conversationID string) (*SummarizeResult, error) {
+	// Don't summarize short conversations regardless of token count.
+	userTurns := 0
+	for _, msg := range history {
+		if msg.Role == "user" {
+			userTurns++
+		}
+	}
+	if userTurns < minUserTurnsForSummarization {
+		return nil, nil
+	}
+
 	totalTokens := s.estimateHistoryTokens(history)
 	if totalTokens <= s.thresholdTokens {
 		return nil, nil
@@ -148,6 +165,12 @@ func (s *Summarizer) findSplitPoint(history []provider.Message, totalTokens int)
 func (s *Summarizer) estimateHistoryTokens(history []provider.Message) int {
 	total := 0
 	for _, msg := range history {
+		// Skip tool result messages — they inflate the count but are excluded
+		// from the summarization prompt anyway. Only count conversational
+		// content (user, assistant, system) toward the threshold.
+		if msg.Role == "tool" {
+			continue
+		}
 		if s.provider != nil {
 			n, err := s.provider.CountTokens(msg.Content)
 			if err == nil {
